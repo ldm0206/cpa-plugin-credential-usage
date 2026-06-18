@@ -1,21 +1,29 @@
 # Credential Usage Plugin
 
-A CPA plugin that exposes credential quota and usage data through the Management API.
+A CPA plugin that exposes credential quota and usage data through CPA plugin resource routes.
 
 ## Capabilities
 
 - **UsagePlugin**: Collects usage data from every API request (token counts, response headers)
 - **ManagementAPI**: Serves credential usage data via HTTP endpoints
 
-## Management API Endpoints
+## Resource Endpoints
+
+CPA exposes this plugin through its plugin resource route mechanism. These endpoints do not use the Management API path and do not require the Management API key.
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/v0/management/credential-usage` | List all credentials with quota/usage data |
-| GET | `/v0/management/credential-usage/:auth_index` | Single credential detail |
+| GET | `/v0/resource/plugins/credential-usage/` | List all credentials with quota/usage data |
+| GET | `/v0/resource/plugins/credential-usage/:auth_index` | Single credential detail |
 
 Query parameters:
 - `provider` (optional): Filter by provider name
+
+Example:
+
+```bash
+curl http://127.0.0.1:8317/v0/resource/plugins/credential-usage/
+```
 
 ## Configuration
 
