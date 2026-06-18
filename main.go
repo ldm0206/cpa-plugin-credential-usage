@@ -605,7 +605,7 @@ type managementRequest struct {
 }
 
 func handleManagementRegister() ([]byte, error) {
-	return okEnvelopeJSON(`{"routes":[{"Method":"GET","Path":"/credential-usage","Menu":"Credential Usage","Description":"List all credentials with quota and usage data"},{"Method":"GET","Path":"/credential-usage/:auth_index","Menu":"","Description":"Get single credential quota and usage detail"}]}`)
+	return okEnvelopeJSON(`{"resources":[{"Path":"/","Menu":"Credential Usage","Description":"List all credentials with quota and usage data"},{"Path":"/:auth_index","Menu":"","Description":"Get single credential quota and usage detail"}]}`)
 }
 
 func handleManagementHandle(request []byte) ([]byte, error) {
