@@ -75,7 +75,7 @@ jobs:
           cache: true
 
       - name: Resolve release metadata
-        run: scripts/release-metadata.sh ${{ matrix.goos }} ${{ matrix.goarch }} ${{ matrix.ext }}
+        run: bash scripts/release-metadata.sh ${{ matrix.goos }} ${{ matrix.goarch }} ${{ matrix.ext }}
 
       - name: Build shared library
         run: |
@@ -88,7 +88,7 @@ jobs:
           rm -f "dist/${PLUGIN_ID}.h"
 
       - name: Package plugin
-        run: scripts/package-plugin.sh dist "${LIB_NAME}" "${ARCHIVE_NAME}"
+        run: bash scripts/package-plugin.sh dist "${LIB_NAME}" "${ARCHIVE_NAME}"
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
@@ -118,7 +118,7 @@ jobs:
 
       - name: Resolve release metadata
         id: release_metadata
-        run: scripts/release-metadata.sh windows arm64
+        run: bash scripts/release-metadata.sh windows arm64
 
       - name: Build Windows ARM64 shared library
         timeout-minutes: 45
@@ -135,7 +135,7 @@ jobs:
           x-flags: main.pluginVersion=${{ steps.release_metadata.outputs.version }}
 
       - name: Package plugin
-        run: scripts/package-plugin.sh dist/windows-arm64 "${PLUGIN_ID}.dll" "${ARCHIVE_NAME}"
+        run: bash scripts/package-plugin.sh dist/windows-arm64 "${PLUGIN_ID}.dll" "${ARCHIVE_NAME}"
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
@@ -176,7 +176,7 @@ jobs:
 
       - name: Resolve release metadata
         id: release_metadata
-        run: scripts/release-metadata.sh freebsd ${{ matrix.goarch }}
+        run: bash scripts/release-metadata.sh freebsd ${{ matrix.goarch }}
 
       - name: Build FreeBSD shared library
         timeout-minutes: 45
@@ -193,7 +193,7 @@ jobs:
           x-flags: main.pluginVersion=${{ steps.release_metadata.outputs.version }}
 
       - name: Package plugin
-        run: scripts/package-plugin.sh dist/freebsd-${{ matrix.goarch }} "${PLUGIN_ID}.so" "${ARCHIVE_NAME}"
+        run: bash scripts/package-plugin.sh dist/freebsd-${{ matrix.goarch }} "${PLUGIN_ID}.so" "${ARCHIVE_NAME}"
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
