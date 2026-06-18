@@ -138,3 +138,37 @@ func TestManagementRegisterReturnsResourceRoutes(t *testing.T) {
 		t.Fatalf("second resource path = %q, want /:auth_index", registration.Resources[1].Path)
 	}
 }
+
+func TestResourceMissingCredentialReturns404(t *testing.T) {
+	resetTestStore()
+
+	resp := callManagementHandleForTest(t, "/v0/resource/plugins/credential-usage/missing")
+	if resp.StatusCode != 404 {
+		t.Fatalf("status = %d, want 404", resp.StatusCode)
+	}
+	body := decodeManagementBody(t, resp.Body)
+	var payload map[string]string
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("unmarshal error body: %v body=%s", err, string(body))
+	}
+	if payload["error"] != "credential not found" {
+		t.Fatalf("error = %q, want credential not found", payload["error"])
+	}
+}
+
+func TestUnknownResourcePathReturns404(t *testing.T) {
+	resetTestStore()
+
+	resp := callManagementHandleForTest(t, "/v0/resource/plugins/credential-usage-extra/")
+	if resp.StatusCode != 404 {
+		t.Fatalf("status = %d, want 404", resp.StatusCode)
+	}
+	body := decodeManagementBody(t, resp.Body)
+	var payload map[string]string
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("unmarshal error body: %v body=%s", err, string(body))
+	}
+	if payload["error"] != "not found" {
+		t.Fatalf("error = %q, want not found", payload["error"])
+	}
+}
