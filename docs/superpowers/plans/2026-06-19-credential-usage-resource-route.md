@@ -100,11 +100,11 @@ func TestManagementRegisterReturnsResourceRoutes(t *testing.T) {
 	if len(registration.Resources) != 2 {
 		t.Fatalf("resources length = %d, want 2; result=%s", len(registration.Resources), string(env.Result))
 	}
-	if registration.Resources[0].Path != "/" {
-		t.Fatalf("first resource path = %q, want /", registration.Resources[0].Path)
+	if registration.Resources[0].Path != "/list" {
+		t.Fatalf("first resource path = %q, want /list", registration.Resources[0].Path)
 	}
-	if registration.Resources[1].Path != "/:auth_index" {
-		t.Fatalf("second resource path = %q, want /:auth_index", registration.Resources[1].Path)
+	if registration.Resources[1].Path != "/detail" {
+		t.Fatalf("second resource path = %q, want /detail", registration.Resources[1].Path)
 	}
 }
 ```
@@ -125,7 +125,7 @@ In `main.go`, replace `handleManagementRegister` with:
 
 ```go
 func handleManagementRegister() ([]byte, error) {
-	return okEnvelopeJSON(`{"resources":[{"Path":"/","Menu":"Credential Usage","Description":"List all credentials with quota and usage data"},{"Path":"/:auth_index","Menu":"","Description":"Get single credential quota and usage detail"}]}`)
+	return okEnvelopeJSON(`{"resources":[{"Path":"/list","Menu":"Credential Usage","Description":"List all credentials with quota and usage data"},{"Path":"/detail","Menu":"","Description":"Get single credential quota and usage detail"}]}`)
 }
 ```
 
@@ -177,9 +177,9 @@ func seedTestCredential(authIndex string) {
 	entry.Status = "available"
 }
 
-func callManagementHandleForTest(t *testing.T, path string) managementResponseForTest {
+func callManagementHandleForTest(t *testing.T, path string, query map[string][]string) managementResponseForTest {
 	t.Helper()
-	request, err := json.Marshal(managementRequest{Method: "GET", Path: path})
+	request, err := json.Marshal(managementRequest{Method: "GET", Path: path, Query: query})
 	if err != nil {
 		t.Fatalf("marshal request: %v", err)
 	}
@@ -205,7 +205,7 @@ func TestResourceListPathReturnsCredentials(t *testing.T) {
 	resetTestStore()
 	seedTestCredential("1")
 
-	resp := callManagementHandleForTest(t, "/v0/resource/plugins/credential-usage/")
+	resp := callManagementHandleForTest(t, "/v0/resource/plugins/credential-usage/list", nil)
 	if resp.StatusCode != 200 {
 		t.Fatalf("status = %d, want 200", resp.StatusCode)
 	}
@@ -223,7 +223,7 @@ func TestResourceDetailPathReturnsCredential(t *testing.T) {
 	resetTestStore()
 	seedTestCredential("2")
 
-	resp := callManagementHandleForTest(t, "/v0/resource/plugins/credential-usage/2")
+	resp := callManagementHandleForTest(t, "/v0/resource/plugins/credential-usage/detail", map[string][]string{"auth_index": {"2"}})
 	if resp.StatusCode != 200 {
 		t.Fatalf("status = %d, want 200", resp.StatusCode)
 	}
@@ -258,14 +258,15 @@ const credentialUsageResourceBasePath = "/v0/resource/plugins/credential-usage"
 func normalizeResourcePath(path string) string {
 	path = strings.TrimSpace(path)
 	if path == credentialUsageResourceBasePath {
-		return "/credential-usage"
+		return "/list"
 	}
 	if strings.HasPrefix(path, credentialUsageResourceBasePath+"/") {
-		suffix := strings.TrimPrefix(path, credentialUsageResourceBasePath)
-		if suffix == "/" {
-			return "/credential-usage"
+		suffix := strings.TrimPrefix(path, credentialUsageResourceBasePath+"/")
+		suffix = strings.TrimRight(suffix, "/")
+		if suffix == "" {
+			return "/list"
 		}
-		return "/credential-usage" + strings.TrimRight(suffix, "/")
+		return "/" + suffix
 	}
 	return strings.TrimRight(path, "/")
 }
@@ -319,7 +320,7 @@ Append to `main_test.go`:
 func TestResourceMissingCredentialReturns404(t *testing.T) {
 	resetTestStore()
 
-	resp := callManagementHandleForTest(t, "/v0/resource/plugins/credential-usage/missing")
+	resp := callManagementHandleForTest(t, "/v0/resource/plugins/credential-usage/detail", map[string][]string{"auth_index": {"missing"}})
 	if resp.StatusCode != 404 {
 		t.Fatalf("status = %d, want 404", resp.StatusCode)
 	}
@@ -336,7 +337,7 @@ func TestResourceMissingCredentialReturns404(t *testing.T) {
 func TestUnknownResourcePathReturns404(t *testing.T) {
 	resetTestStore()
 
-	resp := callManagementHandleForTest(t, "/v0/resource/plugins/credential-usage-extra/")
+	resp := callManagementHandleForTest(t, "/v0/resource/plugins/credential-usage/unknown", nil)
 	if resp.StatusCode != 404 {
 		t.Fatalf("status = %d, want 404", resp.StatusCode)
 	}
@@ -400,8 +401,8 @@ CPA exposes this plugin through its plugin resource route mechanism. These endpo
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/v0/resource/plugins/credential-usage/` | List all credentials with quota/usage data |
-| GET | `/v0/resource/plugins/credential-usage/:auth_index` | Single credential detail |
+| GET | `/v0/resource/plugins/credential-usage/list` | List all credentials with quota/usage data |
+| GET | `/v0/resource/plugins/credential-usage/detail?auth_index=<auth_index>` | Single credential detail |
 
 Query parameters:
 - `provider` (optional): Filter by provider name
@@ -409,7 +410,7 @@ Query parameters:
 Example:
 
 ```bash
-curl http://127.0.0.1:8317/v0/resource/plugins/credential-usage/
+curl http://127.0.0.1:8317/v0/resource/plugins/credential-usage/list
 ```
 ```
 

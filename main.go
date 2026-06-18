@@ -605,7 +605,7 @@ type managementRequest struct {
 }
 
 func handleManagementRegister() ([]byte, error) {
-	return okEnvelopeJSON(`{"resources":[{"Path":"/","Menu":"Credential Usage","Description":"List all credentials with quota and usage data"},{"Path":"/:auth_index","Menu":"","Description":"Get single credential quota and usage detail"}]}`)
+	return okEnvelopeJSON(`{"resources":[{"Path":"/list","Menu":"Credential Usage","Description":"List all credentials with quota and usage data"},{"Path":"/detail","Menu":"","Description":"Get single credential quota and usage detail"}]}`)
 }
 
 const credentialUsageResourceBasePath = "/v0/resource/plugins/credential-usage"
@@ -613,14 +613,15 @@ const credentialUsageResourceBasePath = "/v0/resource/plugins/credential-usage"
 func normalizeResourcePath(path string) string {
 	path = strings.TrimSpace(path)
 	if path == credentialUsageResourceBasePath {
-		return "/credential-usage"
+		return "/list"
 	}
 	if strings.HasPrefix(path, credentialUsageResourceBasePath+"/") {
-		suffix := strings.TrimPrefix(path, credentialUsageResourceBasePath)
-		if suffix == "/" {
-			return "/credential-usage"
+		suffix := strings.TrimPrefix(path, credentialUsageResourceBasePath+"/")
+		suffix = strings.TrimRight(suffix, "/")
+		if suffix == "" {
+			return "/list"
 		}
-		return "/credential-usage" + strings.TrimRight(suffix, "/")
+		return "/" + suffix
 	}
 	return strings.TrimRight(path, "/")
 }
@@ -633,7 +634,7 @@ func handleManagementHandle(request []byte) ([]byte, error) {
 
 	path := normalizeResourcePath(req.Path)
 
-	if path == "/credential-usage" {
+	if path == "/list" {
 		provider := ""
 		if req.Query != nil {
 			if vals, ok := req.Query["provider"]; ok && len(vals) > 0 {
@@ -649,9 +650,16 @@ func handleManagementHandle(request []byte) ([]byte, error) {
 		return managementJSONResponse(200, entries)
 	}
 
-	// Single credential: /credential-usage/:auth_index
-	if strings.HasPrefix(path, "/credential-usage/") {
-		authIndex := strings.TrimPrefix(path, "/credential-usage/")
+	if path == "/detail" {
+		authIndex := ""
+		if req.Query != nil {
+			if vals, ok := req.Query["auth_index"]; ok && len(vals) > 0 {
+				authIndex = vals[0]
+			}
+		}
+		if authIndex == "" {
+			return managementJSONResponse(400, map[string]string{"error": "auth_index query parameter is required"})
+		}
 		entry := store.getByIndex(authIndex)
 		if entry == nil {
 			return managementJSONResponse(404, map[string]string{"error": "credential not found"})

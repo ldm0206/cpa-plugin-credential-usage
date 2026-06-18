@@ -24,8 +24,8 @@ CPA `ServeResourceHTTP` dispatches GET resource requests without Management API 
 
 The plugin will expose:
 
-- `GET /v0/resource/plugins/credential-usage/`
-- `GET /v0/resource/plugins/credential-usage/:auth_index`
+- `GET /v0/resource/plugins/credential-usage/list`
+- `GET /v0/resource/plugins/credential-usage/detail?auth_index=<auth_index>`
 
 The plugin will not document or rely on:
 
@@ -39,7 +39,7 @@ The plugin will not document or rely on:
 - `usage_plugin: true` for receiving usage records.
 - `management_api: true` because CPA resource routes are registered through this capability.
 
-`management.register` returns `resources`, not `routes`, for browser/API-visible unauthenticated resources.
+`management.register` returns `resources`, not `routes`, for browser/API-visible unauthenticated resources. Resource paths must be exact-match paths accepted by CPA (no `:` parameters, no bare `/` which becomes empty after TrimRight).
 
 ## Request Handling
 
@@ -47,8 +47,8 @@ The existing credential store and usage collection logic remains unchanged.
 
 The management/resource handler will normalize incoming paths by stripping CPA's resource prefix for this plugin:
 
-- `/v0/resource/plugins/credential-usage/` maps to list all credentials.
-- `/v0/resource/plugins/credential-usage/<auth_index>` maps to a single credential.
+- `/v0/resource/plugins/credential-usage/list` maps to list all credentials.
+- `/v0/resource/plugins/credential-usage/detail` maps to a single credential, using the `auth_index` query parameter from `managementRequest.Query`.
 
 The handler returns JSON responses with `content-type: application/json`.
 

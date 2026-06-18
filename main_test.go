@@ -47,9 +47,9 @@ func seedTestCredential(authIndex string) {
 	entry.Status = "available"
 }
 
-func callManagementHandleForTest(t *testing.T, path string) managementResponseForTest {
+func callManagementHandleForTest(t *testing.T, path string, query map[string][]string) managementResponseForTest {
 	t.Helper()
-	request, err := json.Marshal(managementRequest{Method: "GET", Path: path})
+	request, err := json.Marshal(managementRequest{Method: "GET", Path: path, Query: query})
 	if err != nil {
 		t.Fatalf("marshal request: %v", err)
 	}
@@ -75,7 +75,7 @@ func TestResourceListPathReturnsCredentials(t *testing.T) {
 	resetTestStore()
 	seedTestCredential("1")
 
-	resp := callManagementHandleForTest(t, "/v0/resource/plugins/credential-usage/")
+	resp := callManagementHandleForTest(t, "/v0/resource/plugins/credential-usage/list", nil)
 	if resp.StatusCode != 200 {
 		t.Fatalf("status = %d, want 200", resp.StatusCode)
 	}
@@ -93,7 +93,7 @@ func TestResourceDetailPathReturnsCredential(t *testing.T) {
 	resetTestStore()
 	seedTestCredential("2")
 
-	resp := callManagementHandleForTest(t, "/v0/resource/plugins/credential-usage/2")
+	resp := callManagementHandleForTest(t, "/v0/resource/plugins/credential-usage/detail", map[string][]string{"auth_index": {"2"}})
 	if resp.StatusCode != 200 {
 		t.Fatalf("status = %d, want 200", resp.StatusCode)
 	}
@@ -131,18 +131,18 @@ func TestManagementRegisterReturnsResourceRoutes(t *testing.T) {
 	if len(registration.Resources) != 2 {
 		t.Fatalf("resources length = %d, want 2; result=%s", len(registration.Resources), string(env.Result))
 	}
-	if registration.Resources[0].Path != "/" {
-		t.Fatalf("first resource path = %q, want /", registration.Resources[0].Path)
+	if registration.Resources[0].Path != "/list" {
+		t.Fatalf("first resource path = %q, want /list", registration.Resources[0].Path)
 	}
-	if registration.Resources[1].Path != "/:auth_index" {
-		t.Fatalf("second resource path = %q, want /:auth_index", registration.Resources[1].Path)
+	if registration.Resources[1].Path != "/detail" {
+		t.Fatalf("second resource path = %q, want /detail", registration.Resources[1].Path)
 	}
 }
 
 func TestResourceMissingCredentialReturns404(t *testing.T) {
 	resetTestStore()
 
-	resp := callManagementHandleForTest(t, "/v0/resource/plugins/credential-usage/missing")
+	resp := callManagementHandleForTest(t, "/v0/resource/plugins/credential-usage/detail", map[string][]string{"auth_index": {"missing"}})
 	if resp.StatusCode != 404 {
 		t.Fatalf("status = %d, want 404", resp.StatusCode)
 	}
@@ -159,7 +159,7 @@ func TestResourceMissingCredentialReturns404(t *testing.T) {
 func TestUnknownResourcePathReturns404(t *testing.T) {
 	resetTestStore()
 
-	resp := callManagementHandleForTest(t, "/v0/resource/plugins/credential-usage-extra/")
+	resp := callManagementHandleForTest(t, "/v0/resource/plugins/credential-usage/unknown", nil)
 	if resp.StatusCode != 404 {
 		t.Fatalf("status = %d, want 404", resp.StatusCode)
 	}

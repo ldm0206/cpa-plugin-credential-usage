@@ -13,16 +13,18 @@ CPA exposes this plugin through its plugin resource route mechanism. These endpo
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/v0/resource/plugins/credential-usage/` | List all credentials with quota/usage data |
-| GET | `/v0/resource/plugins/credential-usage/:auth_index` | Single credential detail |
+| GET | `/v0/resource/plugins/credential-usage/list` | List all credentials with quota/usage data |
+| GET | `/v0/resource/plugins/credential-usage/detail?auth_index=<auth_index>` | Single credential detail |
 
 Query parameters:
-- `provider` (optional): Filter by provider name
+- `provider` (optional): Filter by provider name (list endpoint)
+- `auth_index` (required): Credential auth index (detail endpoint)
 
 Example:
 
 ```bash
-curl http://127.0.0.1:8317/v0/resource/plugins/credential-usage/
+curl http://127.0.0.1:8317/v0/resource/plugins/credential-usage/list
+curl http://127.0.0.1:8317/v0/resource/plugins/credential-usage/detail?auth_index=2
 ```
 
 ## Configuration
