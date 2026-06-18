@@ -33,6 +33,80 @@ func decodeManagementBody(t *testing.T, body string) []byte {
 	return decoded
 }
 
+func resetTestStore() {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	store.data = make(map[string]*credentialEntry)
+}
+
+func seedTestCredential(authIndex string) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	entry := store.getOrCreate(authIndex, "claude", "auth-"+authIndex)
+	entry.Label = "Claude " + authIndex
+	entry.Status = "available"
+}
+
+func callManagementHandleForTest(t *testing.T, path string) managementResponseForTest {
+	t.Helper()
+	request, err := json.Marshal(managementRequest{Method: "GET", Path: path})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	raw, err := handleMethod("management.handle", request)
+	if err != nil {
+		t.Fatalf("handleMethod returned error: %v", err)
+	}
+	env := decodeTestEnvelope(t, raw)
+	var resp managementResponseForTest
+	if err := json.Unmarshal(env.Result, &resp); err != nil {
+		t.Fatalf("unmarshal management response: %v result=%s", err, string(env.Result))
+	}
+	return resp
+}
+
+type managementResponseForTest struct {
+	StatusCode int                 `json:"StatusCode"`
+	Headers    map[string][]string `json:"Headers"`
+	Body       string              `json:"Body"`
+}
+
+func TestResourceListPathReturnsCredentials(t *testing.T) {
+	resetTestStore()
+	seedTestCredential("1")
+
+	resp := callManagementHandleForTest(t, "/v0/resource/plugins/credential-usage/")
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	body := decodeManagementBody(t, resp.Body)
+	var entries []credentialEntry
+	if err := json.Unmarshal(body, &entries); err != nil {
+		t.Fatalf("unmarshal list body: %v body=%s", err, string(body))
+	}
+	if len(entries) != 1 || entries[0].AuthIndex != "1" {
+		t.Fatalf("entries = %+v, want one auth_index=1", entries)
+	}
+}
+
+func TestResourceDetailPathReturnsCredential(t *testing.T) {
+	resetTestStore()
+	seedTestCredential("2")
+
+	resp := callManagementHandleForTest(t, "/v0/resource/plugins/credential-usage/2")
+	if resp.StatusCode != 200 {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	body := decodeManagementBody(t, resp.Body)
+	var entry credentialEntry
+	if err := json.Unmarshal(body, &entry); err != nil {
+		t.Fatalf("unmarshal detail body: %v body=%s", err, string(body))
+	}
+	if entry.AuthIndex != "2" {
+		t.Fatalf("auth_index = %q, want 2", entry.AuthIndex)
+	}
+}
+
 func TestManagementRegisterReturnsResourceRoutes(t *testing.T) {
 	raw, err := handleMethod("management.register", nil)
 	if err != nil {

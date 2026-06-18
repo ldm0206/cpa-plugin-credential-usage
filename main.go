@@ -608,13 +608,30 @@ func handleManagementRegister() ([]byte, error) {
 	return okEnvelopeJSON(`{"resources":[{"Path":"/","Menu":"Credential Usage","Description":"List all credentials with quota and usage data"},{"Path":"/:auth_index","Menu":"","Description":"Get single credential quota and usage detail"}]}`)
 }
 
+const credentialUsageResourceBasePath = "/v0/resource/plugins/credential-usage"
+
+func normalizeResourcePath(path string) string {
+	path = strings.TrimSpace(path)
+	if path == credentialUsageResourceBasePath {
+		return "/credential-usage"
+	}
+	if strings.HasPrefix(path, credentialUsageResourceBasePath+"/") {
+		suffix := strings.TrimPrefix(path, credentialUsageResourceBasePath)
+		if suffix == "/" {
+			return "/credential-usage"
+		}
+		return "/credential-usage" + strings.TrimRight(suffix, "/")
+	}
+	return strings.TrimRight(path, "/")
+}
+
 func handleManagementHandle(request []byte) ([]byte, error) {
 	var req managementRequest
 	if err := json.Unmarshal(request, &req); err != nil {
 		return managementJSONResponse(400, map[string]string{"error": "invalid request"})
 	}
 
-	path := req.Path
+	path := normalizeResourcePath(req.Path)
 
 	if path == "/credential-usage" {
 		provider := ""
