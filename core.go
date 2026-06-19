@@ -48,43 +48,65 @@ type quotaState struct {
 }
 
 type usageSummary struct {
-	TotalRequests   int64 `json:"total_requests"`
-	SuccessRequests int64 `json:"success_requests"`
-	FailedRequests  int64 `json:"failed_requests"`
-	InputTokens     int64 `json:"input_tokens"`
-	OutputTokens    int64 `json:"output_tokens"`
-	TotalTokens     int64 `json:"total_tokens"`
+	TotalRequests   int64
+	SuccessRequests int64
+	FailedRequests  int64
+	InputTokens     int64
+	OutputTokens    int64
+	TotalTokens     int64
 }
 
-type quotaRemaining struct {
-	Available             bool     `json:"available"`
-	RequestsRemaining     *int64   `json:"requests_remaining,omitempty"`
-	RequestsLimit         *int64   `json:"requests_limit,omitempty"`
-	InputTokensRemaining  *int64   `json:"input_tokens_remaining,omitempty"`
-	InputTokensLimit      *int64   `json:"input_tokens_limit,omitempty"`
-	OutputTokensRemaining *int64   `json:"output_tokens_remaining,omitempty"`
-	OutputTokensLimit     *int64   `json:"output_tokens_limit,omitempty"`
-	CreditAmount          *float64 `json:"credit_amount,omitempty"`
-	MinCreditAmount       *float64 `json:"min_credit_amount,omitempty"`
-	PaidTierID            string   `json:"paid_tier_id,omitempty"`
-	ResetsAt              *string  `json:"resets_at,omitempty"`
-	ResetsInSeconds       *int64   `json:"resets_in_seconds,omitempty"`
-	Detail                string   `json:"detail,omitempty"`
-	Source                string   `json:"source"`
-	UpdatedAt             string   `json:"updated_at"`
+type quotaDetails struct {
+	Source          string            `json:"source,omitempty"`
+	UpdatedAt       string            `json:"updated_at,omitempty"`
+	Available       *bool             `json:"available,omitempty"`
+	Windows         []quotaWindow     `json:"windows,omitempty"`
+	OverallResetAt  string            `json:"overall_reset_at,omitempty"`
+	RateLimits      *rateLimitDetails `json:"rate_limits,omitempty"`
+	Credits         *creditDetails    `json:"credits,omitempty"`
+	ResetsAt        string            `json:"resets_at,omitempty"`
+	ResetsInSeconds *int64            `json:"resets_in_seconds,omitempty"`
+	Detail          string            `json:"detail,omitempty"`
+}
+
+type quotaWindow struct {
+	Name               string   `json:"name"`
+	Label              string   `json:"label,omitempty"`
+	Status             string   `json:"status,omitempty"`
+	Utilization        *float64 `json:"utilization,omitempty"`
+	SurpassedThreshold *bool    `json:"surpassed_threshold,omitempty"`
+	ResetAt            string   `json:"reset_at,omitempty"`
+}
+
+type rateLimitDetails struct {
+	Requests     *rateLimitBucket `json:"requests,omitempty"`
+	InputTokens  *rateLimitBucket `json:"input_tokens,omitempty"`
+	OutputTokens *rateLimitBucket `json:"output_tokens,omitempty"`
+}
+
+type rateLimitBucket struct {
+	Limit     *int64 `json:"limit,omitempty"`
+	Remaining *int64 `json:"remaining,omitempty"`
+	ResetAt   string `json:"reset_at,omitempty"`
+}
+
+type creditDetails struct {
+	Amount          *float64 `json:"amount,omitempty"`
+	MinimumForUsage *float64 `json:"minimum_for_usage,omitempty"`
+	PaidTierID      string   `json:"paid_tier_id,omitempty"`
 }
 
 type credentialEntry struct {
-	AuthID         string          `json:"auth_id"`
-	AuthIndex      string          `json:"auth_index"`
-	Provider       string          `json:"provider"`
-	Label          string          `json:"label,omitempty"`
-	Email          string          `json:"email,omitempty"`
-	Status         string          `json:"status"`
-	QuotaState     quotaState      `json:"quota_state"`
-	UsageSummary   usageSummary    `json:"usage_summary"`
-	QuotaRemaining *quotaRemaining `json:"quota_remaining,omitempty"`
-	LastActiveAt   string          `json:"last_active_at,omitempty"`
+	AuthID       string       `json:"auth_id"`
+	AuthIndex    string       `json:"auth_index"`
+	Provider     string       `json:"provider"`
+	Label        string       `json:"label,omitempty"`
+	Email        string       `json:"email,omitempty"`
+	Status       string       `json:"status"`
+	QuotaState   quotaState   `json:"quota_state"`
+	UsageSummary usageSummary `json:"-"`
+	QuotaDetails quotaDetails `json:"quota_details"`
+	LastActiveAt string       `json:"last_active_at,omitempty"`
 }
 
 type credentialStore struct {
@@ -328,68 +350,126 @@ func parseResponseHeadersLocked(entry *credentialEntry, provider string, headers
 		parseClaudeHeaders(entry, headers)
 	default:
 		if v := firstHeader(headers, "Retry-After"); v != "" {
-			qr := &quotaRemaining{
-				Available: true,
+			available := true
+			details := quotaDetails{
+				Available: &available,
 				Source:    "response_headers",
 				UpdatedAt: time.Now().UTC().Format(time.RFC3339),
 			}
-			if secs, err := strconv.ParseInt(v, 10, 64); err == nil {
-				resetTime := time.Now().UTC().Add(time.Duration(secs) * time.Second).Format(time.RFC3339)
-				qr.ResetsAt = &resetTime
-				qr.ResetsInSeconds = int64Ptr(secs)
-				qr.Detail = fmt.Sprintf("Retry-After: %ds", secs)
+			if secs, err := strconv.ParseInt(strings.TrimSpace(v), 10, 64); err == nil {
+				details.ResetsAt = time.Now().UTC().Add(time.Duration(secs) * time.Second).Format(time.RFC3339)
+				details.ResetsInSeconds = int64Ptr(secs)
+				details.Detail = fmt.Sprintf("Retry-After: %ds", secs)
 			}
-			entry.QuotaRemaining = qr
+			entry.QuotaDetails = details
 		}
 	}
 }
 
 func parseClaudeHeaders(entry *credentialEntry, headers map[string][]string) {
-	qr := &quotaRemaining{
-		Available: true,
-		Source:    "response_headers",
-		UpdatedAt: time.Now().UTC().Format(time.RFC3339),
-	}
+	details := quotaDetails{UpdatedAt: time.Now().UTC().Format(time.RFC3339)}
+	available := true
+	hasDetails := false
 
-	if v := firstHeaderInt(headers, "anthropic-ratelimit-requests-remaining"); v != nil {
-		qr.RequestsRemaining = v
-		if *v == 0 {
-			qr.Available = false
+	if window, ok := anthropicQuotaWindow(headers, "5h", "5h", "5 hour limit", true); ok {
+		details.Windows = append(details.Windows, window)
+		hasDetails = true
+		if strings.EqualFold(window.Status, "rejected") {
+			available = false
 		}
 	}
-	if v := firstHeaderInt(headers, "anthropic-ratelimit-requests-limit"); v != nil {
-		qr.RequestsLimit = v
+	if window, ok := anthropicQuotaWindow(headers, "7d", "7d", "weekly limit", true); ok {
+		details.Windows = append(details.Windows, window)
+		hasDetails = true
 	}
-	if v := firstHeaderInt(headers, "anthropic-ratelimit-input-tokens-remaining"); v != nil {
-		qr.InputTokensRemaining = v
-	}
-	if v := firstHeaderInt(headers, "anthropic-ratelimit-input-tokens-limit"); v != nil {
-		qr.InputTokensLimit = v
-	}
-	if v := firstHeaderInt(headers, "anthropic-ratelimit-output-tokens-remaining"); v != nil {
-		qr.OutputTokensRemaining = v
-	}
-	if v := firstHeaderInt(headers, "anthropic-ratelimit-output-tokens-limit"); v != nil {
-		qr.OutputTokensLimit = v
-	}
-	if v := firstHeader(headers, "anthropic-ratelimit-requests-reset"); v != "" {
-		qr.ResetsAt = &v
+	if v := firstHeader(headers, "anthropic-ratelimit-unified-reset"); v != "" {
+		details.OverallResetAt = v
+		hasDetails = true
 	}
 
-	// Build detail string
+	rateLimits := &rateLimitDetails{
+		Requests: buildRateLimitBucket(
+			firstHeaderInt(headers, "anthropic-ratelimit-requests-limit"),
+			firstHeaderInt(headers, "anthropic-ratelimit-requests-remaining"),
+			firstHeader(headers, "anthropic-ratelimit-requests-reset"),
+		),
+		InputTokens: buildRateLimitBucket(
+			firstHeaderInt(headers, "anthropic-ratelimit-input-tokens-limit"),
+			firstHeaderInt(headers, "anthropic-ratelimit-input-tokens-remaining"),
+			"",
+		),
+		OutputTokens: buildRateLimitBucket(
+			firstHeaderInt(headers, "anthropic-ratelimit-output-tokens-limit"),
+			firstHeaderInt(headers, "anthropic-ratelimit-output-tokens-remaining"),
+			"",
+		),
+	}
+	if !rateLimits.empty() {
+		details.RateLimits = rateLimits
+		hasDetails = true
+		if rateLimits.Requests != nil && rateLimits.Requests.Remaining != nil && *rateLimits.Requests.Remaining == 0 {
+			available = false
+		}
+	}
+
 	var parts []string
-	if qr.RequestsRemaining != nil && qr.RequestsLimit != nil {
-		parts = append(parts, fmt.Sprintf("RPM: %d/%d", *qr.RequestsRemaining, *qr.RequestsLimit))
+	if rateLimits.Requests != nil && rateLimits.Requests.Remaining != nil && rateLimits.Requests.Limit != nil {
+		parts = append(parts, fmt.Sprintf("RPM: %d/%d", *rateLimits.Requests.Remaining, *rateLimits.Requests.Limit))
 	}
-	if qr.InputTokensRemaining != nil && qr.InputTokensLimit != nil {
-		parts = append(parts, fmt.Sprintf("Input tokens: %d/%d", *qr.InputTokensRemaining, *qr.InputTokensLimit))
+	if rateLimits.InputTokens != nil && rateLimits.InputTokens.Remaining != nil && rateLimits.InputTokens.Limit != nil {
+		parts = append(parts, fmt.Sprintf("Input tokens: %d/%d", *rateLimits.InputTokens.Remaining, *rateLimits.InputTokens.Limit))
 	}
-	if qr.OutputTokensRemaining != nil && qr.OutputTokensLimit != nil {
-		parts = append(parts, fmt.Sprintf("Output tokens: %d/%d", *qr.OutputTokensRemaining, *qr.OutputTokensLimit))
+	if rateLimits.OutputTokens != nil && rateLimits.OutputTokens.Remaining != nil && rateLimits.OutputTokens.Limit != nil {
+		parts = append(parts, fmt.Sprintf("Output tokens: %d/%d", *rateLimits.OutputTokens.Remaining, *rateLimits.OutputTokens.Limit))
 	}
-	qr.Detail = strings.Join(parts, ", ")
+	if len(parts) > 0 {
+		details.Detail = strings.Join(parts, ", ")
+	}
 
-	entry.QuotaRemaining = qr
+	if !hasDetails {
+		return
+	}
+	details.Available = &available
+	details.Source = "anthropic_headers"
+	entry.QuotaDetails = details
+}
+
+func anthropicQuotaWindow(headers map[string][]string, prefix, name, label string, includeStatus bool) (quotaWindow, bool) {
+	statusHeader := "anthropic-ratelimit-unified-" + prefix + "-status"
+	resetHeader := "anthropic-ratelimit-unified-" + prefix + "-reset"
+	utilizationHeader := "anthropic-ratelimit-unified-" + prefix + "-utilization"
+	thresholdHeader := "anthropic-ratelimit-unified-" + prefix + "-surpassed-threshold"
+
+	names := []string{resetHeader, utilizationHeader, thresholdHeader}
+	if includeStatus {
+		names = append(names, statusHeader)
+	}
+	if !hasAnyHeader(headers, names...) {
+		return quotaWindow{}, false
+	}
+
+	window := quotaWindow{
+		Name:               name,
+		Label:              label,
+		Utilization:        firstHeaderFloat(headers, utilizationHeader),
+		SurpassedThreshold: firstHeaderBool(headers, thresholdHeader),
+		ResetAt:            firstHeader(headers, resetHeader),
+	}
+	if includeStatus {
+		window.Status = firstHeader(headers, statusHeader)
+	}
+	return window, true
+}
+
+func buildRateLimitBucket(limit, remaining *int64, resetAt string) *rateLimitBucket {
+	if limit == nil && remaining == nil && resetAt == "" {
+		return nil
+	}
+	return &rateLimitBucket{Limit: limit, Remaining: remaining, ResetAt: resetAt}
+}
+
+func (limits *rateLimitDetails) empty() bool {
+	return limits == nil || (limits.Requests == nil && limits.InputTokens == nil && limits.OutputTokens == nil)
 }
 
 func parseFailureBodyLocked(entry *credentialEntry, provider string, failure usageFailure) {
@@ -416,22 +496,18 @@ func parseCodex429(entry *credentialEntry, body string) {
 	if parsed.Error.Type != "usage_limit_reached" {
 		return
 	}
-	qr := entry.QuotaRemaining
-	if qr == nil {
-		qr = &quotaRemaining{
-			Source:    "failure_body",
-			UpdatedAt: time.Now().UTC().Format(time.RFC3339),
-		}
-	}
-	qr.Available = false
-	qr.Source = "failure_body"
+	available := false
+	details := entry.QuotaDetails
+	details.Available = &available
+	details.Source = "failure_body"
+	details.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
 	if parsed.Error.ResetsAt != "" {
-		qr.ResetsAt = &parsed.Error.ResetsAt
+		details.ResetsAt = parsed.Error.ResetsAt
 	}
 	if parsed.Error.ResetsInSeconds > 0 {
-		qr.ResetsInSeconds = int64Ptr(parsed.Error.ResetsInSeconds)
+		details.ResetsInSeconds = int64Ptr(parsed.Error.ResetsInSeconds)
 	}
-	entry.QuotaRemaining = qr
+	entry.QuotaDetails = details
 	// Also update quota state
 	entry.QuotaState.Exceeded = true
 	entry.QuotaState.Reason = "usage_limit_reached"
@@ -447,10 +523,19 @@ func firstHeader(headers map[string][]string, key string) string {
 	// Case-insensitive lookup
 	for k, vals := range headers {
 		if strings.EqualFold(k, key) && len(vals) > 0 {
-			return vals[0]
+			return strings.TrimSpace(vals[0])
 		}
 	}
 	return ""
+}
+
+func hasAnyHeader(headers map[string][]string, keys ...string) bool {
+	for _, key := range keys {
+		if firstHeader(headers, key) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func firstHeaderInt(headers map[string][]string, key string) *int64 {
@@ -465,6 +550,30 @@ func firstHeaderInt(headers map[string][]string, key string) *int64 {
 	return int64Ptr(n)
 }
 
+func firstHeaderFloat(headers map[string][]string, key string) *float64 {
+	v := firstHeader(headers, key)
+	if v == "" {
+		return nil
+	}
+	n, err := strconv.ParseFloat(v, 64)
+	if err != nil {
+		return nil
+	}
+	return float64Ptr(n)
+}
+
+func firstHeaderBool(headers map[string][]string, key string) *bool {
+	v := firstHeader(headers, key)
+	if v == "" {
+		return nil
+	}
+	n, err := strconv.ParseBool(v)
+	if err != nil {
+		return nil
+	}
+	return &n
+}
+
 // --- Task 5: ManagementAPI Handlers ---
 
 type managementRequest struct {
@@ -476,7 +585,7 @@ type managementRequest struct {
 }
 
 func handleManagementRegister() ([]byte, error) {
-	return okEnvelopeJSON(`{"resources":[{"Path":"/list","Menu":"Credential Usage","Description":"List all credentials with quota and usage data"},{"Path":"/detail","Menu":"","Description":"Get single credential quota and usage detail"}]}`)
+	return okEnvelopeJSON(`{"resources":[{"Path":"/list","Menu":"Credential Usage","Description":"List all credentials with quota details"},{"Path":"/detail","Menu":"","Description":"Get single credential quota detail"}]}`)
 }
 
 const credentialUsageResourceBasePath = "/v0/resource/plugins/credential-usage"
@@ -726,6 +835,7 @@ type apiCallResponse struct {
 
 type loadCodeAssistResponse struct {
 	PaidTier struct {
+		ID               string `json:"id"`
 		AvailableCredits []struct {
 			CreditAmount        float64 `json:"creditAmount"`
 			MinimumCreditAmount float64 `json:"minimumCreditAmountForUsage"`
@@ -842,20 +952,18 @@ func updateAntigravityQuota(authIndex string, resp *loadCodeAssistResponse) {
 		return
 	}
 
-	qr := entry.QuotaRemaining
-	if qr == nil {
-		qr = &quotaRemaining{
-			Source:    "upstream_api",
-			UpdatedAt: time.Now().UTC().Format(time.RFC3339),
-		}
+	available := credit.CreditAmount > credit.MinimumCreditAmount
+	details := entry.QuotaDetails
+	details.Source = "upstream_api"
+	details.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+	details.Available = &available
+	details.Credits = &creditDetails{
+		Amount:          float64Ptr(credit.CreditAmount),
+		MinimumForUsage: float64Ptr(credit.MinimumCreditAmount),
+		PaidTierID:      resp.PaidTier.ID,
 	}
-	qr.CreditAmount = float64Ptr(credit.CreditAmount)
-	qr.MinCreditAmount = float64Ptr(credit.MinimumCreditAmount)
-	qr.Source = "upstream_api"
-	qr.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
-	qr.Available = credit.CreditAmount > credit.MinimumCreditAmount
-	qr.Detail = fmt.Sprintf("Credits: %.2f / min: %.2f", credit.CreditAmount, credit.MinimumCreditAmount)
-	entry.QuotaRemaining = qr
+	details.Detail = fmt.Sprintf("Credits: %.2f / min: %.2f", credit.CreditAmount, credit.MinimumCreditAmount)
+	entry.QuotaDetails = details
 
 	if credit.CreditAmount <= credit.MinimumCreditAmount {
 		entry.QuotaState.Exceeded = true
