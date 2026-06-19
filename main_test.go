@@ -107,6 +107,33 @@ func TestResourceDetailPathReturnsCredential(t *testing.T) {
 	}
 }
 
+func TestMergeAuthFileEntryCopiesRuntimeUsageCounts(t *testing.T) {
+	resetTestStore()
+
+	mergeAuthFileEntry("7", hostAuthFileEntry{
+		ID:        "auth-7",
+		AuthIndex: "7",
+		Provider:  "antigravity",
+		Status:    "active",
+		Success:   3,
+		Failed:    2,
+	})
+
+	entry := store.getByIndex("7")
+	if entry == nil {
+		t.Fatal("entry is nil, want credential entry")
+	}
+	if entry.UsageSummary.TotalRequests != 5 {
+		t.Fatalf("total_requests = %d, want 5", entry.UsageSummary.TotalRequests)
+	}
+	if entry.UsageSummary.SuccessRequests != 3 {
+		t.Fatalf("success_requests = %d, want 3", entry.UsageSummary.SuccessRequests)
+	}
+	if entry.UsageSummary.FailedRequests != 2 {
+		t.Fatalf("failed_requests = %d, want 2", entry.UsageSummary.FailedRequests)
+	}
+}
+
 func TestPluginRegisterUsesInjectedVersion(t *testing.T) {
 	oldVersion := pluginVersion
 	pluginVersion = "9.8.7-test"
