@@ -664,11 +664,6 @@ func mergeAuthFileEntry(authIndex string, entry hostAuthFileEntry) {
 	if entry.Status != "" {
 		storeEntry.Status = entry.Status
 	}
-	if entry.Success != 0 || entry.Failed != 0 {
-		storeEntry.UsageSummary.SuccessRequests = entry.Success
-		storeEntry.UsageSummary.FailedRequests = entry.Failed
-		storeEntry.UsageSummary.TotalRequests = entry.Success + entry.Failed
-	}
 
 	// Set quota state from unavailable/status_message/next_retry_after
 	if entry.Unavailable {
