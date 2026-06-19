@@ -214,10 +214,46 @@ func handleMethod(method string, request []byte) ([]byte, error) {
 	}
 }
 
+var pluginVersion = "0.1.0"
+
 // --- Plugin registration ---
 
 func handleRegister() ([]byte, error) {
-	return okEnvelopeJSON(`{"schema_version":1,"metadata":{"Name":"credential-usage","Version":"0.1.0","Author":"router-for-me","GitHubRepository":"https://github.com/router-for-me/cpa-plugin-credential-usage","ConfigFields":[{"Name":"cpa-base-url","Type":"string","Description":"Base URL of the CPA instance (e.g. http://localhost:3456)"},{"Name":"management-key","Type":"string","Description":"Management API key for authenticating requests"},{"Name":"poll-interval","Type":"string","Description":"Interval between credential usage polls (e.g. 5m, 30s). Default: 5m"}]},"capabilities":{"usage_plugin":true,"management_api":true}}`)
+	registration := map[string]any{
+		"schema_version": 1,
+		"metadata": map[string]any{
+			"Name":             "credential-usage",
+			"Version":          pluginVersion,
+			"Author":           "router-for-me",
+			"GitHubRepository": "https://github.com/router-for-me/cpa-plugin-credential-usage",
+			"ConfigFields": []map[string]any{
+				{
+					"Name":        "cpa-base-url",
+					"Type":        "string",
+					"Description": "Base URL of the CPA instance (e.g. http://localhost:3456)",
+				},
+				{
+					"Name":        "management-key",
+					"Type":        "string",
+					"Description": "Management API key for authenticating requests",
+				},
+				{
+					"Name":        "poll-interval",
+					"Type":        "string",
+					"Description": "Interval between credential usage polls (e.g. 5m, 30s). Default: 5m",
+				},
+			},
+		},
+		"capabilities": map[string]bool{
+			"usage_plugin":   true,
+			"management_api": true,
+		},
+	}
+	raw, err := json.Marshal(registration)
+	if err != nil {
+		return nil, err
+	}
+	return okEnvelopeJSON(string(raw))
 }
 
 // --- Task 4: UsagePlugin Handler ---

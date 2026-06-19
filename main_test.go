@@ -107,6 +107,30 @@ func TestResourceDetailPathReturnsCredential(t *testing.T) {
 	}
 }
 
+func TestPluginRegisterUsesInjectedVersion(t *testing.T) {
+	oldVersion := pluginVersion
+	pluginVersion = "9.8.7-test"
+	defer func() { pluginVersion = oldVersion }()
+
+	raw, err := handleMethod("plugin.register", nil)
+	if err != nil {
+		t.Fatalf("handleMethod returned error: %v", err)
+	}
+	env := decodeTestEnvelope(t, raw)
+
+	var registration struct {
+		Metadata struct {
+			Version string `json:"Version"`
+		} `json:"metadata"`
+	}
+	if err := json.Unmarshal(env.Result, &registration); err != nil {
+		t.Fatalf("unmarshal registration result: %v result=%s", err, string(env.Result))
+	}
+	if registration.Metadata.Version != "9.8.7-test" {
+		t.Fatalf("metadata version = %q, want 9.8.7-test", registration.Metadata.Version)
+	}
+}
+
 func TestManagementRegisterReturnsResourceRoutes(t *testing.T) {
 	raw, err := handleMethod("management.register", nil)
 	if err != nil {
