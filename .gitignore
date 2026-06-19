@@ -1,4 +1,5 @@
 dist/
+.claude/
 *.so
 *.dll
 *.dylib
