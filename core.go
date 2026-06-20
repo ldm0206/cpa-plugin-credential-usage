@@ -1833,37 +1833,6 @@ func applyAntigravityFailureBody(authIndex, body string) {
 	parseAntigravity429(entry, body)
 }
 
-func updateAntigravityQuota(authIndex string, resp *loadCodeAssistResponse) {
-	store.mu.Lock()
-	defer store.mu.Unlock()
-
-	entry := store.data[authIndex]
-	if entry == nil {
-		return
-	}
-
-	selected := selectAntigravityCredit(resp.PaidTier.AvailableCredits)
-	details := entry.QuotaDetails
-	details.Source = "upstream_api"
-	details.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
-	details.Credits = buildCreditDetails(resp, selected)
-
-	if selected != nil {
-		available := selected.CreditAmount > selected.MinimumCreditAmount
-		details.Available = &available
-		details.Detail = fmt.Sprintf("Credits: %.2f / min: %.2f", selected.CreditAmount, selected.MinimumCreditAmount)
-		if selected.CreditAmount <= selected.MinimumCreditAmount {
-			entry.QuotaState.Exceeded = true
-			entry.QuotaState.Reason = "insufficient_credits"
-		} else {
-			entry.QuotaState.Exceeded = false
-			entry.QuotaState.Reason = ""
-			entry.QuotaState.NextRecoverAt = nil
-		}
-	}
-	entry.QuotaDetails = details
-}
-
 func updateAntigravityModelQuotas(authIndex string, resp *fetchAvailableModelsResponse) {
 	store.mu.Lock()
 	defer store.mu.Unlock()
@@ -1875,7 +1844,7 @@ func updateAntigravityModelQuotas(authIndex string, resp *fetchAvailableModelsRe
 
 	details := entry.QuotaDetails
 	if details.Source == "" {
-		details.Source = "upstream_api"
+		details.Source = "antigravity_model_quotas"
 	}
 	details.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
 	if details.ModelQuotas == nil {

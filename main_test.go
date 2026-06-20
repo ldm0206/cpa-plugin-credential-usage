@@ -574,21 +574,27 @@ func TestParseCodex429StoresQuotaDetails(t *testing.T) {
 	}
 }
 
-func TestUpdateAntigravityQuotaStoresCreditsInQuotaDetails(t *testing.T) {
+func TestUpdateAntigravitySubscriptionStoresCreditsInQuotaDetails(t *testing.T) {
 	resetTestStore()
 	store.mu.Lock()
 	store.getOrCreate("ag", "antigravity", "auth-ag")
 	store.mu.Unlock()
 
-	resp := &loadCodeAssistResponse{}
-	resp.PaidTier.ID = "paid-tier-id"
+	resp := &antigravitySubscriptionResponse{}
+	resp.PaidTier.ID = "g1-pro-tier"
 	resp.PaidTier.AvailableCredits = append(resp.PaidTier.AvailableCredits, loadCodeAssistCredit{CreditAmount: 123.45, MinimumCreditAmount: 1})
 
-	updateAntigravityQuota("ag", resp)
+	updateAntigravitySubscription("ag", resp)
 
 	entry := store.getByIndex("ag")
 	if entry == nil {
 		t.Fatalf("missing antigravity credential")
+	}
+	if entry.QuotaDetails.Source != "antigravity_subscription" {
+		t.Fatalf("source = %q, want antigravity_subscription", entry.QuotaDetails.Source)
+	}
+	if entry.QuotaDetails.PlanType != "pro" {
+		t.Fatalf("plan_type = %q, want pro", entry.QuotaDetails.PlanType)
 	}
 	credits := entry.QuotaDetails.Credits
 	if credits == nil {
@@ -600,33 +606,36 @@ func TestUpdateAntigravityQuotaStoresCreditsInQuotaDetails(t *testing.T) {
 	if credits.MinimumForUsage == nil || *credits.MinimumForUsage != 1 {
 		t.Fatalf("minimum_for_usage = %v, want 1", credits.MinimumForUsage)
 	}
-	if credits.PaidTierID != "paid-tier-id" {
-		t.Fatalf("paid_tier_id = %q, want paid-tier-id", credits.PaidTierID)
+	if credits.PaidTierID != "g1-pro-tier" {
+		t.Fatalf("paid_tier_id = %q, want g1-pro-tier", credits.PaidTierID)
 	}
 }
 
-func TestUpdateAntigravityQuotaSelectsGoogleOneCreditAndStoresAllCredits(t *testing.T) {
+func TestUpdateAntigravitySubscriptionSelectsGoogleOneCreditAndStoresAllCredits(t *testing.T) {
 	resetTestStore()
 	store.mu.Lock()
 	store.getOrCreate("ag-google", "antigravity", "auth-ag-google")
 	store.mu.Unlock()
 
-	resp := &loadCodeAssistResponse{}
+	resp := &antigravitySubscriptionResponse{}
 	resp.CloudAICompanionProject = "project-123"
 	resp.CurrentTier.ID = "free-tier"
 	resp.CurrentTier.Name = "Free"
-	resp.PaidTier.ID = "paid-tier-id"
+	resp.PaidTier.ID = "g1-pro-tier"
 	resp.PaidTier.Name = "Google AI Pro"
 	resp.PaidTier.AvailableCredits = append(resp.PaidTier.AvailableCredits,
 		loadCodeAssistCredit{CreditType: "OTHER", CreditAmount: 999, MinimumCreditAmount: 1},
 		loadCodeAssistCredit{CreditType: "GOOGLE_ONE_AI", CreditAmount: 12, MinimumCreditAmount: 20},
 	)
 
-	updateAntigravityQuota("ag-google", resp)
+	updateAntigravitySubscription("ag-google", resp)
 
 	entry := store.getByIndex("ag-google")
 	if entry == nil {
 		t.Fatalf("missing antigravity credential")
+	}
+	if entry.QuotaDetails.PlanType != "pro" {
+		t.Fatalf("plan_type = %q, want pro", entry.QuotaDetails.PlanType)
 	}
 	credits := entry.QuotaDetails.Credits
 	if credits == nil {
@@ -641,9 +650,6 @@ func TestUpdateAntigravityQuotaSelectsGoogleOneCreditAndStoresAllCredits(t *test
 	if entry.QuotaDetails.Available == nil || *entry.QuotaDetails.Available {
 		t.Fatalf("available = %v, want false", entry.QuotaDetails.Available)
 	}
-	if !entry.QuotaState.Exceeded || entry.QuotaState.Reason != "insufficient_credits" {
-		t.Fatalf("quota_state = %+v, want insufficient_credits", entry.QuotaState)
-	}
 	if len(credits.Items) != 2 {
 		t.Fatalf("items = %+v, want 2 credit items", credits.Items)
 	}
@@ -655,18 +661,18 @@ func TestUpdateAntigravityQuotaSelectsGoogleOneCreditAndStoresAllCredits(t *test
 	}
 }
 
-func TestUpdateAntigravityQuotaStoresTierMetadataWithoutCredits(t *testing.T) {
+func TestUpdateAntigravitySubscriptionStoresTierMetadataWithoutCredits(t *testing.T) {
 	resetTestStore()
 	store.mu.Lock()
 	store.getOrCreate("ag-tier", "antigravity", "auth-ag-tier")
 	store.mu.Unlock()
 
 	defaultTier := true
-	resp := &loadCodeAssistResponse{}
+	resp := &antigravitySubscriptionResponse{}
 	resp.CloudAICompanionProject = "project-456"
 	resp.CurrentTier.ID = "free-tier"
 	resp.CurrentTier.Name = "Free"
-	resp.PaidTier.ID = "pro-tier"
+	resp.PaidTier.ID = "g1-ultra-tier"
 	resp.PaidTier.Name = "Pro"
 	resp.IneligibleTiers = append(resp.IneligibleTiers, struct {
 		Tier          tierInfo `json:"tier"`
@@ -679,11 +685,14 @@ func TestUpdateAntigravityQuotaStoresTierMetadataWithoutCredits(t *testing.T) {
 		IsDefault *bool  `json:"isDefault"`
 	}{ID: "free-tier", Name: "Free", IsDefault: &defaultTier})
 
-	updateAntigravityQuota("ag-tier", resp)
+	updateAntigravitySubscription("ag-tier", resp)
 
 	entry := store.getByIndex("ag-tier")
 	if entry == nil {
 		t.Fatalf("missing antigravity credential")
+	}
+	if entry.QuotaDetails.PlanType != "ultra" {
+		t.Fatalf("plan_type = %q, want ultra", entry.QuotaDetails.PlanType)
 	}
 	credits := entry.QuotaDetails.Credits
 	if credits == nil {
@@ -692,7 +701,7 @@ func TestUpdateAntigravityQuotaStoresTierMetadataWithoutCredits(t *testing.T) {
 	if entry.QuotaDetails.Available != nil {
 		t.Fatalf("available = %v, want nil without credit balance", entry.QuotaDetails.Available)
 	}
-	if credits.PaidTierID != "pro-tier" || credits.PaidTierName != "Pro" || credits.CurrentTierID != "free-tier" || credits.CloudAICompanionProject != "project-456" {
+	if credits.PaidTierID != "g1-ultra-tier" || credits.PaidTierName != "Pro" || credits.CurrentTierID != "free-tier" || credits.CloudAICompanionProject != "project-456" {
 		t.Fatalf("credits metadata = %+v, want tier/project metadata", credits)
 	}
 	if len(credits.IneligibleTiers) != 1 || credits.IneligibleTiers[0].ReasonCode != "INELIGIBLE_ACCOUNT" {

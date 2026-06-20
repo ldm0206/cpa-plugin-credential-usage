@@ -1,6 +1,9 @@
 package main
 
-import "time"
+import (
+	"fmt"
+	"time"
+)
 
 type antigravityQuotaSummaryResponse struct {
 	Groups []antigravityQuotaSummaryGroup `json:"groups"`
@@ -113,7 +116,7 @@ func antigravityPlanType(resp *antigravitySubscriptionResponse) string {
 func stableQuotaID(label, fallback string, index int) string {
 	id := sanitizeQuotaName(label)
 	if id == "" {
-		id = fallback
+		return fmt.Sprintf("%s-%d", fallback, index)
 	}
-	return id
+	return fmt.Sprintf("%s-%d", id, index)
 }
