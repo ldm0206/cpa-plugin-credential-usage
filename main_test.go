@@ -650,6 +650,12 @@ func TestUpdateAntigravitySubscriptionSelectsGoogleOneCreditAndStoresAllCredits(
 	if entry.QuotaDetails.Available == nil || *entry.QuotaDetails.Available {
 		t.Fatalf("available = %v, want false", entry.QuotaDetails.Available)
 	}
+	if !entry.QuotaState.Exceeded {
+		t.Fatalf("quota_state.exceeded = %v, want true for insufficient credits", entry.QuotaState.Exceeded)
+	}
+	if entry.QuotaState.Reason != "insufficient_credits" {
+		t.Fatalf("quota_state.reason = %q, want insufficient_credits", entry.QuotaState.Reason)
+	}
 	if len(credits.Items) != 2 {
 		t.Fatalf("items = %+v, want 2 credit items", credits.Items)
 	}
@@ -658,6 +664,43 @@ func TestUpdateAntigravitySubscriptionSelectsGoogleOneCreditAndStoresAllCredits(
 	}
 	if credits.PaidTierName != "Google AI Pro" || credits.CurrentTierName != "Free" || credits.CloudAICompanionProject != "project-123" {
 		t.Fatalf("credits metadata = %+v, want tier/project metadata", credits)
+	}
+}
+
+func TestUpdateAntigravitySubscriptionAvailableCreditsClearsQuotaState(t *testing.T) {
+	resetTestStore()
+	store.mu.Lock()
+	store.getOrCreate("ag-available", "antigravity", "auth-ag-available")
+	// Pre-set exceeded quota state to verify it gets cleared.
+	store.data["ag-available"].QuotaState.Exceeded = true
+	store.data["ag-available"].QuotaState.Reason = "insufficient_credits"
+	recoverAt := "2026-06-22T00:00:00Z"
+	store.data["ag-available"].QuotaState.NextRecoverAt = &recoverAt
+	store.mu.Unlock()
+
+	resp := &antigravitySubscriptionResponse{}
+	resp.PaidTier.ID = "g1-pro-tier"
+	resp.PaidTier.AvailableCredits = append(resp.PaidTier.AvailableCredits,
+		loadCodeAssistCredit{CreditType: "GOOGLE_ONE_AI", CreditAmount: 50, MinimumCreditAmount: 1},
+	)
+
+	updateAntigravitySubscription("ag-available", resp)
+
+	entry := store.getByIndex("ag-available")
+	if entry == nil {
+		t.Fatalf("missing antigravity credential")
+	}
+	if entry.QuotaDetails.Available == nil || !*entry.QuotaDetails.Available {
+		t.Fatalf("available = %v, want true", entry.QuotaDetails.Available)
+	}
+	if entry.QuotaState.Exceeded {
+		t.Fatalf("quota_state.exceeded = %v, want false for available credits", entry.QuotaState.Exceeded)
+	}
+	if entry.QuotaState.Reason != "" {
+		t.Fatalf("quota_state.reason = %q, want empty for available credits", entry.QuotaState.Reason)
+	}
+	if entry.QuotaState.NextRecoverAt != nil {
+		t.Fatalf("quota_state.next_recover_at = %v, want nil for available credits", entry.QuotaState.NextRecoverAt)
 	}
 }
 

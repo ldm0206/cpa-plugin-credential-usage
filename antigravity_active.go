@@ -93,6 +93,14 @@ func updateAntigravitySubscription(authIndex string, resp *antigravitySubscripti
 	if selected != nil {
 		available := selected.CreditAmount > selected.MinimumCreditAmount
 		details.Available = &available
+		if !available {
+			entry.QuotaState.Exceeded = true
+			entry.QuotaState.Reason = "insufficient_credits"
+		} else {
+			entry.QuotaState.Exceeded = false
+			entry.QuotaState.Reason = ""
+			entry.QuotaState.NextRecoverAt = nil
+		}
 	}
 	entry.QuotaDetails = details
 }
