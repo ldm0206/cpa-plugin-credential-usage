@@ -168,6 +168,22 @@ Codex 429 failure bodies can additionally populate `error_type`, `plan_type`, `d
           "is_default": true
         }
       ]
+    },
+    "model_quotas": {
+      "gemini-2.0-flash": {
+        "remaining_fraction": 0.85,
+        "reset_time": "2025-01-01T00:00:00Z",
+        "display_name": "Gemini 2.0 Flash",
+        "supports_images": true,
+        "supports_thinking": true,
+        "thinking_budget": 24576,
+        "recommended": true,
+        "max_tokens": 1000000,
+        "max_output_tokens": 65536,
+        "supported_mime_types": {
+          "text/plain": true
+        }
+      }
     }
   }
 }
@@ -188,7 +204,7 @@ Always active. Collects data from:
   - `anthropic-ratelimit-requests-*`
   - `anthropic-ratelimit-input-tokens-*`
   - `anthropic-ratelimit-output-tokens-*`
-  - generic fallback `x-ratelimit-*-requests`, `x-ratelimit-*-tokens`, and `Retry-After`
+  - generic fallback `x-ratelimit-*-requests`, `x-ratelimit-*-tokens`, and `Retry-After` (delta seconds or HTTP-date)
 - Codex response headers:
   - `x-codex-primary-used-percent`
   - `x-codex-primary-reset-after-seconds`
@@ -226,6 +242,10 @@ Periodically queries upstream APIs through CPA's `api-call` endpoint:
   - all `paidTier.availableCredits[]` entries including `creditType`, `creditAmount`, and `minimumCreditAmountForUsage`
   - `ineligibleTiers[]` reason fields
   - `allowedTiers[]`
+- Antigravity/Gemini CLI `fetchAvailableModels`:
+  - `models.<model>.quotaInfo.remainingFraction`
+  - `models.<model>.quotaInfo.resetTime`
+  - model metadata such as display name, image/thinking support, thinking budget, max token fields, recommendation flag, and supported MIME types
 
 For Antigravity credits, the legacy `credits.amount` and `credits.minimum_for_usage` fields are selected from `creditType == "GOOGLE_ONE_AI"` when present, otherwise from the first available credit.
 

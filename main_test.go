@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/base64"
 	"encoding/json"
+	"net/http"
 	"testing"
 	"time"
 )
@@ -421,6 +422,63 @@ func TestParseClaudeHeadersRetryAfterFallback(t *testing.T) {
 	}
 }
 
+func TestParseClaudeHeadersRetryAfterHTTPDate(t *testing.T) {
+	entry := &credentialEntry{}
+	resetTime := time.Now().UTC().Add(2 * time.Hour).Truncate(time.Second)
+	retryAfter := resetTime.Format(http.TimeFormat)
+	parseClaudeHeaders(entry, map[string][]string{"Retry-After": {retryAfter}})
+
+	if entry.QuotaDetails.Source != "response_headers" {
+		t.Fatalf("source = %q, want response_headers", entry.QuotaDetails.Source)
+	}
+	if entry.QuotaDetails.Available == nil || *entry.QuotaDetails.Available {
+		t.Fatalf("available = %v, want false", entry.QuotaDetails.Available)
+	}
+	if entry.QuotaDetails.ResetsAt != resetTime.Format(time.RFC3339) {
+		t.Fatalf("resets_at = %q, want %q", entry.QuotaDetails.ResetsAt, resetTime.Format(time.RFC3339))
+	}
+	if entry.QuotaDetails.ResetsInSeconds == nil || *entry.QuotaDetails.ResetsInSeconds <= 0 {
+		t.Fatalf("resets_in_seconds = %v, want positive", entry.QuotaDetails.ResetsInSeconds)
+	}
+}
+
+func TestCredentialStoreReturnsDeepCopy(t *testing.T) {
+	resetTestStore()
+	store.mu.Lock()
+	entry := store.getOrCreate("copy", "claude", "auth-copy")
+	entry.QuotaDetails.Available = boolPtr(true)
+	entry.QuotaDetails.Windows = []quotaWindow{{Name: "5h", Utilization: float64Ptr(0.1)}}
+	entry.QuotaDetails.RateLimits = &rateLimitDetails{Requests: &rateLimitBucket{Limit: int64Ptr(10)}}
+	entry.QuotaDetails.Credits = &creditDetails{Amount: float64Ptr(1), Items: []creditItem{{Amount: float64Ptr(2)}}}
+	entry.QuotaDetails.ModelQuotas = map[string]modelQuota{"model-a": {RemainingFraction: float64Ptr(0.5), SupportedMimeTypes: map[string]bool{"text/plain": true}}}
+	store.mu.Unlock()
+
+	snapshot := store.getByIndex("copy")
+	if snapshot == nil {
+		t.Fatalf("snapshot = nil")
+	}
+	snapshot.QuotaDetails.Windows[0].Name = "mutated"
+	*snapshot.QuotaDetails.RateLimits.Requests.Limit = 99
+	*snapshot.QuotaDetails.Credits.Items[0].Amount = 99
+	snapshot.QuotaDetails.ModelQuotas["model-a"].SupportedMimeTypes["text/plain"] = false
+
+	fresh := store.getByIndex("copy")
+	if fresh.QuotaDetails.Windows[0].Name != "5h" {
+		t.Fatalf("stored window mutated through snapshot: %+v", fresh.QuotaDetails.Windows[0])
+	}
+	if *fresh.QuotaDetails.RateLimits.Requests.Limit != 10 {
+		t.Fatalf("stored rate limit mutated through snapshot: %+v", fresh.QuotaDetails.RateLimits.Requests)
+	}
+	if *fresh.QuotaDetails.Credits.Items[0].Amount != 2 {
+		t.Fatalf("stored credit item mutated through snapshot: %+v", fresh.QuotaDetails.Credits.Items[0])
+	}
+	if !fresh.QuotaDetails.ModelQuotas["model-a"].SupportedMimeTypes["text/plain"] {
+		t.Fatalf("stored model quota map mutated through snapshot: %+v", fresh.QuotaDetails.ModelQuotas["model-a"])
+	}
+}
+
+func boolPtr(v bool) *bool { return &v }
+
 func TestParseCodexHeadersStoresPrimarySecondaryWindows(t *testing.T) {
 	entry := &credentialEntry{}
 	parseCodexHeaders(entry, map[string][]string{
@@ -696,6 +754,77 @@ func TestUpdateClaudeUsageQuotaStoresActiveUsageAPIWindows(t *testing.T) {
 	sonnet := findQuotaWindow(entry.QuotaDetails.Windows, "7d_sonnet")
 	if sonnet == nil || sonnet.Utilization == nil || *sonnet.Utilization != 0.8 || sonnet.ResetAt != "2026-06-25T00:00:00Z" {
 		t.Fatalf("7d_sonnet window = %+v, want utilization/reset", sonnet)
+	}
+}
+
+func TestUpdateAntigravityModelQuotasStoresFetchAvailableModels(t *testing.T) {
+	resetTestStore()
+	store.mu.Lock()
+	store.getOrCreate("ag-models", "antigravity", "auth-ag-models")
+	store.mu.Unlock()
+
+	supportsImages := true
+	supportsThinking := true
+	thinkingBudget := int64(24576)
+	recommended := true
+	maxTokens := int64(1000000)
+	maxOutputTokens := int64(65536)
+	resp := &fetchAvailableModelsResponse{Models: map[string]struct {
+		QuotaInfo *struct {
+			RemainingFraction flexibleFloat `json:"remainingFraction"`
+			ResetTime         string        `json:"resetTime"`
+		} `json:"quotaInfo"`
+		DisplayName        string          `json:"displayName"`
+		SupportsImages     *bool           `json:"supportsImages"`
+		SupportsThinking   *bool           `json:"supportsThinking"`
+		ThinkingBudget     *int64          `json:"thinkingBudget"`
+		Recommended        *bool           `json:"recommended"`
+		MaxTokens          *int64          `json:"maxTokens"`
+		MaxOutputTokens    *int64          `json:"maxOutputTokens"`
+		SupportedMimeTypes map[string]bool `json:"supportedMimeTypes"`
+	}{
+		"gemini-2.0-flash": {
+			QuotaInfo: &struct {
+				RemainingFraction flexibleFloat `json:"remainingFraction"`
+				ResetTime         string        `json:"resetTime"`
+			}{RemainingFraction: 0.85, ResetTime: "2025-01-01T00:00:00Z"},
+			DisplayName:        "Gemini 2.0 Flash",
+			SupportsImages:     &supportsImages,
+			SupportsThinking:   &supportsThinking,
+			ThinkingBudget:     &thinkingBudget,
+			Recommended:        &recommended,
+			MaxTokens:          &maxTokens,
+			MaxOutputTokens:    &maxOutputTokens,
+			SupportedMimeTypes: map[string]bool{"text/plain": true},
+		},
+		"gemini-2.5-pro": {
+			QuotaInfo: &struct {
+				RemainingFraction flexibleFloat `json:"remainingFraction"`
+				ResetTime         string        `json:"resetTime"`
+			}{RemainingFraction: 0.5},
+		},
+	}}
+
+	updateAntigravityModelQuotas("ag-models", resp)
+
+	entry := store.getByIndex("ag-models")
+	if entry == nil {
+		t.Fatalf("missing antigravity credential")
+	}
+	quotas := entry.QuotaDetails.ModelQuotas
+	if len(quotas) != 2 {
+		t.Fatalf("model_quotas = %+v, want 2 entries", quotas)
+	}
+	flash := quotas["gemini-2.0-flash"]
+	if flash.RemainingFraction == nil || *flash.RemainingFraction != 0.85 || flash.ResetTime != "2025-01-01T00:00:00Z" {
+		t.Fatalf("flash quota = %+v, want remaining fraction/reset", flash)
+	}
+	if flash.DisplayName != "Gemini 2.0 Flash" || flash.SupportsImages == nil || !*flash.SupportsImages || flash.MaxTokens == nil || *flash.MaxTokens != 1000000 || !flash.SupportedMimeTypes["text/plain"] {
+		t.Fatalf("flash metadata = %+v, want model metadata", flash)
+	}
+	pro := quotas["gemini-2.5-pro"]
+	if pro.RemainingFraction == nil || *pro.RemainingFraction != 0.5 {
+		t.Fatalf("pro quota = %+v, want remaining fraction", pro)
 	}
 }
 

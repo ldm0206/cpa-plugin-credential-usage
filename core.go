@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"strconv"
 	"strings"
 	"sync"
@@ -57,23 +58,24 @@ type usageSummary struct {
 }
 
 type quotaDetails struct {
-	Source                           string            `json:"source,omitempty"`
-	UpdatedAt                        string            `json:"updated_at,omitempty"`
-	Available                        *bool             `json:"available,omitempty"`
-	Windows                          []quotaWindow     `json:"windows,omitempty"`
-	OverallResetAt                   string            `json:"overall_reset_at,omitempty"`
-	RateLimits                       *rateLimitDetails `json:"rate_limits,omitempty"`
-	Credits                          *creditDetails    `json:"credits,omitempty"`
-	ResetsAt                         string            `json:"resets_at,omitempty"`
-	ResetsInSeconds                  *int64            `json:"resets_in_seconds,omitempty"`
-	PlanType                         string            `json:"plan_type,omitempty"`
-	ErrorType                        string            `json:"error_type,omitempty"`
-	ErrorStatus                      string            `json:"error_status,omitempty"`
-	ErrorReason                      string            `json:"error_reason,omitempty"`
-	Model                            string            `json:"model,omitempty"`
-	RetryDelay                       string            `json:"retry_delay,omitempty"`
-	PrimaryOverSecondaryLimitPercent *float64          `json:"primary_over_secondary_limit_percent,omitempty"`
-	Detail                           string            `json:"detail,omitempty"`
+	Source                           string                `json:"source,omitempty"`
+	UpdatedAt                        string                `json:"updated_at,omitempty"`
+	Available                        *bool                 `json:"available,omitempty"`
+	Windows                          []quotaWindow         `json:"windows,omitempty"`
+	OverallResetAt                   string                `json:"overall_reset_at,omitempty"`
+	RateLimits                       *rateLimitDetails     `json:"rate_limits,omitempty"`
+	Credits                          *creditDetails        `json:"credits,omitempty"`
+	ModelQuotas                      map[string]modelQuota `json:"model_quotas,omitempty"`
+	ResetsAt                         string                `json:"resets_at,omitempty"`
+	ResetsInSeconds                  *int64                `json:"resets_in_seconds,omitempty"`
+	PlanType                         string                `json:"plan_type,omitempty"`
+	ErrorType                        string                `json:"error_type,omitempty"`
+	ErrorStatus                      string                `json:"error_status,omitempty"`
+	ErrorReason                      string                `json:"error_reason,omitempty"`
+	Model                            string                `json:"model,omitempty"`
+	RetryDelay                       string                `json:"retry_delay,omitempty"`
+	PrimaryOverSecondaryLimitPercent *float64              `json:"primary_over_secondary_limit_percent,omitempty"`
+	Detail                           string                `json:"detail,omitempty"`
 }
 
 type quotaWindow struct {
@@ -86,6 +88,19 @@ type quotaWindow struct {
 	ResetAt            string   `json:"reset_at,omitempty"`
 	ResetAfterSeconds  *int64   `json:"reset_after_seconds,omitempty"`
 	WindowMinutes      *int64   `json:"window_minutes,omitempty"`
+}
+
+type modelQuota struct {
+	RemainingFraction  *float64        `json:"remaining_fraction,omitempty"`
+	ResetTime          string          `json:"reset_time,omitempty"`
+	DisplayName        string          `json:"display_name,omitempty"`
+	SupportsImages     *bool           `json:"supports_images,omitempty"`
+	SupportsThinking   *bool           `json:"supports_thinking,omitempty"`
+	ThinkingBudget     *int64          `json:"thinking_budget,omitempty"`
+	Recommended        *bool           `json:"recommended,omitempty"`
+	MaxTokens          *int64          `json:"max_tokens,omitempty"`
+	MaxOutputTokens    *int64          `json:"max_output_tokens,omitempty"`
+	SupportedMimeTypes map[string]bool `json:"supported_mime_types,omitempty"`
 }
 
 type rateLimitDetails struct {
@@ -198,7 +213,7 @@ func (s *credentialStore) getOrCreate(authIndex, provider, authID string) *crede
 func (s *credentialStore) getByIndex(authIndex string) *credentialEntry {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.data[authIndex]
+	return copyCredentialEntry(s.data[authIndex])
 }
 
 func (s *credentialStore) all() []*credentialEntry {
@@ -206,7 +221,7 @@ func (s *credentialStore) all() []*credentialEntry {
 	defer s.mu.RUnlock()
 	result := make([]*credentialEntry, 0, len(s.data))
 	for _, entry := range s.data {
-		result = append(result, entry)
+		result = append(result, copyCredentialEntry(entry))
 	}
 	return result
 }
@@ -217,10 +232,161 @@ func (s *credentialStore) allByProvider(provider string) []*credentialEntry {
 	result := make([]*credentialEntry, 0)
 	for _, entry := range s.data {
 		if entry.Provider == provider {
-			result = append(result, entry)
+			result = append(result, copyCredentialEntry(entry))
 		}
 	}
 	return result
+}
+
+func copyCredentialEntry(entry *credentialEntry) *credentialEntry {
+	if entry == nil {
+		return nil
+	}
+	copyEntry := *entry
+	copyEntry.QuotaDetails = copyQuotaDetails(entry.QuotaDetails)
+	return &copyEntry
+}
+
+func copyQuotaDetails(details quotaDetails) quotaDetails {
+	copyDetails := details
+	if details.Available != nil {
+		available := *details.Available
+		copyDetails.Available = &available
+	}
+	copyDetails.Windows = make([]quotaWindow, len(details.Windows))
+	for i, window := range details.Windows {
+		copyDetails.Windows[i] = copyQuotaWindow(window)
+	}
+	copyDetails.RateLimits = copyRateLimitDetails(details.RateLimits)
+	copyDetails.Credits = copyCreditDetails(details.Credits)
+	if details.ResetsInSeconds != nil {
+		copyDetails.ResetsInSeconds = int64Ptr(*details.ResetsInSeconds)
+	}
+	if details.PrimaryOverSecondaryLimitPercent != nil {
+		copyDetails.PrimaryOverSecondaryLimitPercent = float64Ptr(*details.PrimaryOverSecondaryLimitPercent)
+	}
+	if details.ModelQuotas != nil {
+		copyDetails.ModelQuotas = make(map[string]modelQuota, len(details.ModelQuotas))
+		for model, quota := range details.ModelQuotas {
+			copyDetails.ModelQuotas[model] = copyModelQuota(quota)
+		}
+	}
+	return copyDetails
+}
+
+func copyRateLimitDetails(limits *rateLimitDetails) *rateLimitDetails {
+	if limits == nil {
+		return nil
+	}
+	return &rateLimitDetails{
+		Requests:     copyRateLimitBucket(limits.Requests),
+		InputTokens:  copyRateLimitBucket(limits.InputTokens),
+		OutputTokens: copyRateLimitBucket(limits.OutputTokens),
+		Tokens:       copyRateLimitBucket(limits.Tokens),
+	}
+}
+
+func copyQuotaWindow(window quotaWindow) quotaWindow {
+	copyWindow := window
+	if window.Utilization != nil {
+		copyWindow.Utilization = float64Ptr(*window.Utilization)
+	}
+	if window.UsedPercent != nil {
+		copyWindow.UsedPercent = float64Ptr(*window.UsedPercent)
+	}
+	if window.SurpassedThreshold != nil {
+		surpassedThreshold := *window.SurpassedThreshold
+		copyWindow.SurpassedThreshold = &surpassedThreshold
+	}
+	if window.ResetAfterSeconds != nil {
+		copyWindow.ResetAfterSeconds = int64Ptr(*window.ResetAfterSeconds)
+	}
+	if window.WindowMinutes != nil {
+		copyWindow.WindowMinutes = int64Ptr(*window.WindowMinutes)
+	}
+	return copyWindow
+}
+
+func copyRateLimitBucket(bucket *rateLimitBucket) *rateLimitBucket {
+	if bucket == nil {
+		return nil
+	}
+	copyBucket := *bucket
+	if bucket.Limit != nil {
+		copyBucket.Limit = int64Ptr(*bucket.Limit)
+	}
+	if bucket.Remaining != nil {
+		copyBucket.Remaining = int64Ptr(*bucket.Remaining)
+	}
+	return &copyBucket
+}
+
+func copyCreditDetails(credits *creditDetails) *creditDetails {
+	if credits == nil {
+		return nil
+	}
+	copyCredits := *credits
+	if credits.Amount != nil {
+		copyCredits.Amount = float64Ptr(*credits.Amount)
+	}
+	if credits.MinimumForUsage != nil {
+		copyCredits.MinimumForUsage = float64Ptr(*credits.MinimumForUsage)
+	}
+	copyCredits.Items = make([]creditItem, len(credits.Items))
+	for i, item := range credits.Items {
+		copyCredits.Items[i] = item
+		if item.Amount != nil {
+			copyCredits.Items[i].Amount = float64Ptr(*item.Amount)
+		}
+		if item.MinimumForUsage != nil {
+			copyCredits.Items[i].MinimumForUsage = float64Ptr(*item.MinimumForUsage)
+		}
+	}
+	copyCredits.IneligibleTiers = append([]tierProblem(nil), credits.IneligibleTiers...)
+	copyCredits.AllowedTiers = make([]allowedTier, len(credits.AllowedTiers))
+	for i, tier := range credits.AllowedTiers {
+		copyCredits.AllowedTiers[i] = tier
+		if tier.IsDefault != nil {
+			isDefault := *tier.IsDefault
+			copyCredits.AllowedTiers[i].IsDefault = &isDefault
+		}
+	}
+	return &copyCredits
+}
+
+func copyModelQuota(quota modelQuota) modelQuota {
+	copyQuota := quota
+	if quota.RemainingFraction != nil {
+		copyQuota.RemainingFraction = float64Ptr(*quota.RemainingFraction)
+	}
+	if quota.SupportsImages != nil {
+		supportsImages := *quota.SupportsImages
+		copyQuota.SupportsImages = &supportsImages
+	}
+	if quota.SupportsThinking != nil {
+		supportsThinking := *quota.SupportsThinking
+		copyQuota.SupportsThinking = &supportsThinking
+	}
+	if quota.ThinkingBudget != nil {
+		copyQuota.ThinkingBudget = int64Ptr(*quota.ThinkingBudget)
+	}
+	if quota.Recommended != nil {
+		recommended := *quota.Recommended
+		copyQuota.Recommended = &recommended
+	}
+	if quota.MaxTokens != nil {
+		copyQuota.MaxTokens = int64Ptr(*quota.MaxTokens)
+	}
+	if quota.MaxOutputTokens != nil {
+		copyQuota.MaxOutputTokens = int64Ptr(*quota.MaxOutputTokens)
+	}
+	if quota.SupportedMimeTypes != nil {
+		copyQuota.SupportedMimeTypes = make(map[string]bool, len(quota.SupportedMimeTypes))
+		for mimeType, supported := range quota.SupportedMimeTypes {
+			copyQuota.SupportedMimeTypes[mimeType] = supported
+		}
+	}
+	return copyQuota
 }
 
 // --- Pointer helpers for omitempty numeric fields ---
@@ -435,15 +601,27 @@ func parseRetryAfterQuota(entry *credentialEntry, source, value string) {
 }
 
 func parseRetryAfterIntoDetails(details *quotaDetails, value string) bool {
-	secs, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64)
+	value = strings.TrimSpace(value)
+	secs, err := strconv.ParseInt(value, 10, 64)
+	if err == nil {
+		available := false
+		details.Available = &available
+		details.ResetsAt = time.Now().UTC().Add(time.Duration(secs) * time.Second).Format(time.RFC3339)
+		details.ResetsInSeconds = int64Ptr(secs)
+		details.Detail = fmt.Sprintf("Retry-After: %ds", secs)
+		return true
+	}
+	resetTime, err := http.ParseTime(value)
 	if err != nil {
 		return false
 	}
 	available := false
 	details.Available = &available
-	details.ResetsAt = time.Now().UTC().Add(time.Duration(secs) * time.Second).Format(time.RFC3339)
-	details.ResetsInSeconds = int64Ptr(secs)
-	details.Detail = fmt.Sprintf("Retry-After: %ds", secs)
+	details.ResetsAt = resetTime.UTC().Format(time.RFC3339)
+	if remaining := int64(time.Until(resetTime).Seconds()); remaining > 0 {
+		details.ResetsInSeconds = int64Ptr(remaining)
+	}
+	details.Detail = "Retry-After: " + value
 	return true
 }
 
@@ -1224,6 +1402,23 @@ type loadCodeAssistCredit struct {
 	MinimumCreditAmount flexibleFloat `json:"minimumCreditAmountForUsage"`
 }
 
+type fetchAvailableModelsResponse struct {
+	Models map[string]struct {
+		QuotaInfo *struct {
+			RemainingFraction flexibleFloat `json:"remainingFraction"`
+			ResetTime         string        `json:"resetTime"`
+		} `json:"quotaInfo"`
+		DisplayName        string          `json:"displayName"`
+		SupportsImages     *bool           `json:"supportsImages"`
+		SupportsThinking   *bool           `json:"supportsThinking"`
+		ThinkingBudget     *int64          `json:"thinkingBudget"`
+		Recommended        *bool           `json:"recommended"`
+		MaxTokens          *int64          `json:"maxTokens"`
+		MaxOutputTokens    *int64          `json:"maxOutputTokens"`
+		SupportedMimeTypes map[string]bool `json:"supportedMimeTypes"`
+	} `json:"models"`
+}
+
 type tierInfo struct {
 	ID          string `json:"id"`
 	Name        string `json:"name"`
@@ -1415,7 +1610,6 @@ func queryLoadCodeAssist(authIndex string) {
 		return
 	}
 
-	// Build the api-call payload
 	apiCallPayload, _ := json.Marshal(map[string]any{
 		"auth_index": authIndex,
 		"method":     "POST",
@@ -1426,85 +1620,44 @@ func queryLoadCodeAssist(authIndex string) {
 		},
 		"data": `{"metadata":{"ideType":"ANTIGRAVITY"}}`,
 	})
-
-	// Build the host.http.do request
-	// Host expects: method, url, headers (plural, map[string][]string), body ([]byte = base64 in JSON)
-	targetURL := cfg.CPABaseURL + "/v0/management/api-call"
-	hostPayload, _ := json.Marshal(map[string]any{
-		"method": "POST",
-		"url":    targetURL,
-		"headers": map[string][]string{
-			"Authorization": {"Bearer " + cfg.ManagementKey},
-			"Content-Type":  {"application/json"},
-		},
-		"body": []byte(apiCallPayload),
-	})
-	resp, err := callHostWithResponse("host.http.do", hostPayload)
-	if err != nil {
-		callHostLog("error", fmt.Sprintf("credential-usage: host.http.do failed for %s: %v", authIndex, err))
+	bodyStr, ok := queryManagementAPICall(authIndex, apiCallPayload)
+	if !ok {
 		return
 	}
 
-	// Unwrap envelope
-	var env envelope
-	if err := json.Unmarshal(resp, &env); err != nil || !env.OK {
-		callHostLog("error", fmt.Sprintf("credential-usage: host.http.do envelope error for %s: %v", authIndex, err))
-		return
-	}
-
-	// Unwrap HTTP response
-	var httpResp struct {
-		StatusCode int                 `json:"StatusCode"`
-		Headers    map[string][]string `json:"Headers"`
-		Body       string              `json:"Body"`
-	}
-	if err := json.Unmarshal(env.Result, &httpResp); err != nil {
-		callHostLog("error", fmt.Sprintf("credential-usage: host.http.do parse error for %s: %v", authIndex, err))
-		return
-	}
-
-	if httpResp.StatusCode != 200 {
-		return
-	}
-
-	// Decode base64 body if present
-	var bodyStr string
-	if httpResp.Body != "" {
-		decoded, err := base64.StdEncoding.DecodeString(httpResp.Body)
-		if err != nil {
-			// Body might not be base64
-			bodyStr = httpResp.Body
-		} else {
-			bodyStr = string(decoded)
-		}
-	}
-
-	// Parse apiCallResponse
-	var apiResp apiCallResponse
-	if err := json.Unmarshal([]byte(bodyStr), &apiResp); err != nil {
-		// Try parsing bodyStr directly as loadCodeAssistResponse
-		var assistResp loadCodeAssistResponse
-		if err := json.Unmarshal([]byte(bodyStr), &assistResp); err != nil {
-			applyAntigravityFailureBody(authIndex, bodyStr)
-			return
-		}
-		updateAntigravityQuota(authIndex, &assistResp)
-		return
-	}
-
-	if apiResp.StatusCode != 200 {
-		applyAntigravityFailureBody(authIndex, apiResp.Body)
-		return
-	}
-
-	// Parse the inner body as loadCodeAssistResponse
 	var assistResp loadCodeAssistResponse
-	if err := json.Unmarshal([]byte(apiResp.Body), &assistResp); err != nil {
-		applyAntigravityFailureBody(authIndex, apiResp.Body)
+	if err := json.Unmarshal([]byte(bodyStr), &assistResp); err != nil {
+		applyAntigravityFailureBody(authIndex, bodyStr)
 		return
 	}
-
 	updateAntigravityQuota(authIndex, &assistResp)
+	if assistResp.CloudAICompanionProject != "" {
+		queryAntigravityAvailableModels(authIndex, assistResp.CloudAICompanionProject)
+	}
+}
+
+func queryAntigravityAvailableModels(authIndex, project string) {
+	apiCallPayload, _ := json.Marshal(map[string]any{
+		"auth_index": authIndex,
+		"method":     "POST",
+		"url":        "https://cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels",
+		"header": map[string]string{
+			"Authorization": "Bearer $TOKEN$",
+			"Content-Type":  "application/json",
+			"User-Agent":    "antigravity/1.0",
+		},
+		"data": fmt.Sprintf(`{"project":%q}`, project),
+	})
+	bodyStr, ok := queryManagementAPICall(authIndex, apiCallPayload)
+	if !ok {
+		return
+	}
+	var modelsResp fetchAvailableModelsResponse
+	if err := json.Unmarshal([]byte(bodyStr), &modelsResp); err != nil {
+		applyAntigravityFailureBody(authIndex, bodyStr)
+		return
+	}
+	updateAntigravityModelQuotas(authIndex, &modelsResp)
 }
 
 func applyAntigravityFailureBody(authIndex, body string) {
@@ -1549,6 +1702,54 @@ func updateAntigravityQuota(authIndex string, resp *loadCodeAssistResponse) {
 		}
 	}
 	entry.QuotaDetails = details
+}
+
+func updateAntigravityModelQuotas(authIndex string, resp *fetchAvailableModelsResponse) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+
+	entry := store.data[authIndex]
+	if entry == nil || resp == nil || len(resp.Models) == 0 {
+		return
+	}
+
+	details := entry.QuotaDetails
+	if details.Source == "" {
+		details.Source = "upstream_api"
+	}
+	details.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+	if details.ModelQuotas == nil {
+		details.ModelQuotas = make(map[string]modelQuota, len(resp.Models))
+	}
+	for modelName, model := range resp.Models {
+		quota := modelQuota{
+			DisplayName:        model.DisplayName,
+			SupportsImages:     model.SupportsImages,
+			SupportsThinking:   model.SupportsThinking,
+			ThinkingBudget:     model.ThinkingBudget,
+			Recommended:        model.Recommended,
+			MaxTokens:          model.MaxTokens,
+			MaxOutputTokens:    model.MaxOutputTokens,
+			SupportedMimeTypes: cloneBoolMap(model.SupportedMimeTypes),
+		}
+		if model.QuotaInfo != nil {
+			quota.RemainingFraction = float64Ptr(float64(model.QuotaInfo.RemainingFraction))
+			quota.ResetTime = model.QuotaInfo.ResetTime
+		}
+		details.ModelQuotas[modelName] = quota
+	}
+	entry.QuotaDetails = details
+}
+
+func cloneBoolMap(input map[string]bool) map[string]bool {
+	if input == nil {
+		return nil
+	}
+	out := make(map[string]bool, len(input))
+	for key, value := range input {
+		out[key] = value
+	}
+	return out
 }
 
 func selectAntigravityCredit(credits []loadCodeAssistCredit) *loadCodeAssistCredit {
