@@ -211,24 +211,43 @@ func codexWindowLabelFromSeconds(name string, seconds *int64) string {
 }
 
 func codexUsageAvailable(resp *codexUsageResponse) *bool {
-	for _, limit := range []*codexRateLimitInfo{
+	limits := []*codexRateLimitInfo{
 		firstCodexRateLimit(resp.RateLimit, resp.RateLimitCamel),
 		firstCodexRateLimit(resp.CodeReviewRateLimit, resp.CodeReviewRateLimitCamel),
-	} {
+	}
+	for _, additional := range firstCodexAdditionalRateLimits(resp.AdditionalRateLimits, resp.AdditionalRateLimitsCamel) {
+		limits = append(limits, firstCodexRateLimit(additional.RateLimit, additional.RateLimitCamel))
+	}
+
+	hasSignal := false
+	available := true
+	for _, limit := range limits {
 		if limit == nil {
 			continue
 		}
 		if limit.Allowed != nil {
-			return boolValuePtr(*limit.Allowed)
+			hasSignal = true
+			if !*limit.Allowed {
+				available = false
+			}
 		}
 		if limit.LimitReached != nil {
-			return boolValuePtr(!*limit.LimitReached)
+			hasSignal = true
+			if *limit.LimitReached {
+				available = false
+			}
 		}
 		if limit.LimitReachedCamel != nil {
-			return boolValuePtr(!*limit.LimitReachedCamel)
+			hasSignal = true
+			if *limit.LimitReachedCamel {
+				available = false
+			}
 		}
 	}
-	return nil
+	if !hasSignal {
+		return nil
+	}
+	return boolValuePtr(available)
 }
 
 func boolValuePtr(value bool) *bool {

@@ -1194,6 +1194,50 @@ func TestApplyCodexUsageResponseFallsBackToAuthPlan(t *testing.T) {
 	}
 }
 
+func TestCodexUsageAvailablePrimaryAllowedButCodeReviewLimitReached(t *testing.T) {
+	result := codexUsageAvailable(&codexUsageResponse{
+		RateLimit: &codexRateLimitInfo{Allowed: boolPtr(true)},
+		CodeReviewRateLimit: &codexRateLimitInfo{LimitReached: boolPtr(true)},
+	})
+	if result == nil || *result {
+		t.Fatalf("available = %v, want false when code review limit is reached", result)
+	}
+}
+
+func TestCodexUsageAvailablePrimaryAllowedButAdditionalLimitReached(t *testing.T) {
+	result := codexUsageAvailable(&codexUsageResponse{
+		RateLimit: &codexRateLimitInfo{Allowed: boolPtr(true)},
+		AdditionalRateLimits: []codexAdditionalRateLimit{{
+			LimitName: "team_monthly",
+			RateLimit: &codexRateLimitInfo{LimitReachedCamel: boolPtr(true)},
+		}},
+	})
+	if result == nil || *result {
+		t.Fatalf("available = %v, want false when additional rate limit is reached", result)
+	}
+}
+
+func TestCodexUsageAvailableNoSignalsReturnsNil(t *testing.T) {
+	result := codexUsageAvailable(&codexUsageResponse{})
+	if result != nil {
+		t.Fatalf("available = %v, want nil when no availability signals exist", result)
+	}
+}
+
+func TestCodexUsageAvailableAllSignalsTrueReturnsTrue(t *testing.T) {
+	result := codexUsageAvailable(&codexUsageResponse{
+		RateLimit: &codexRateLimitInfo{Allowed: boolPtr(true)},
+		CodeReviewRateLimit: &codexRateLimitInfo{Allowed: boolPtr(true)},
+		AdditionalRateLimits: []codexAdditionalRateLimit{{
+			LimitName: "team_monthly",
+			RateLimit: &codexRateLimitInfo{LimitReached: boolPtr(false)},
+		}},
+	})
+	if result == nil || !*result {
+		t.Fatalf("available = %v, want true when all limits are available", result)
+	}
+}
+
 func TestUpdateAntigravityQuotaGroupsStoresPanelGroups(t *testing.T) {
 	resetTestStore()
 	store.mu.Lock()
