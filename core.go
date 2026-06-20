@@ -1661,21 +1661,6 @@ func queryCodexQuota(authIndex string) {
 	applyCodexUsageResponse(authIndex, &usageResp)
 }
 
-func applyCodexAPIResponse(authIndex string, apiResp *apiCallResponse) {
-	if apiResp == nil {
-		return
-	}
-	store.mu.Lock()
-	defer store.mu.Unlock()
-	entry := store.data[authIndex]
-	if entry == nil {
-		return
-	}
-	parseCodexHeaders(entry, apiResp.Header)
-	if apiResp.StatusCode == http.StatusTooManyRequests {
-		parseCodex429(entry, apiResp.Body)
-	}
-}
 
 func updateClaudeUsageQuota(authIndex string, resp *claudeUsageResponse) {
 	store.mu.Lock()
