@@ -131,7 +131,7 @@ Codex 429 failure bodies can additionally populate `error_type`, `plan_type`, `d
 {
   "provider": "antigravity",
   "quota_details": {
-    "source": "upstream_api",
+    "source": "antigravity_subscription",
     "available": false,
     "credits": {
       "amount": 12,
@@ -229,27 +229,37 @@ Always active. Collects data from:
 
 ### Active Mode (when `cpa-base-url` + `management-key` are configured)
 
-Periodically queries upstream APIs through CPA's `api-call` endpoint:
+Periodically queries provider quota APIs through CPA's Management API `api-call` endpoint. The plugin does not send provider HTTP requests directly; CPA resolves `$TOKEN$` from the selected `auth_index`, applies credential/global proxy settings, and returns the upstream response.
 
-- Claude OAuth usage API (`https://api.anthropic.com/api/oauth/usage`):
-  - `five_hour.utilization`, `five_hour.resets_at`
-  - `seven_day.utilization`, `seven_day.resets_at`
-  - `seven_day_sonnet.utilization`, `seven_day_sonnet.resets_at`
-- Codex usage panel (`https://chatgpt.com/backend-api/wham/usage`):
-  - reads `plan_type`, `rate_limit` windows (primary/secondary), `code_review_rate_limit`, and `additional_rate_limits`
-  - reads `rate_limit_reset_credits.available_count`
-  - falls back to auth metadata `plan_type` when the panel response omits it
-- Antigravity/Gemini CLI `loadCodeAssist`:
-  - `cloudaicompanionProject`
-  - `currentTier.id/name/description`
-  - `paidTier.id/name/description`
-  - all `paidTier.availableCredits[]` entries including `creditType`, `creditAmount`, and `minimumCreditAmountForUsage`
-  - `ineligibleTiers[]` reason fields
-  - `allowedTiers[]`
-- Antigravity/Gemini CLI `fetchAvailableModels`:
-  - `models.<model>.quotaInfo.remainingFraction`
-  - `models.<model>.quotaInfo.resetTime`
-  - model metadata such as display name, image/thinking support, thinking budget, max token fields, recommendation flag, and supported MIME types
+The active request definitions are centralized in the plugin and aligned with the CPA management panel quota source.
+
+- Claude OAuth APIs:
+  - `GET https://api.anthropic.com/api/oauth/usage`
+    - `five_hour.utilization`, `five_hour.resets_at`
+    - `seven_day.utilization`, `seven_day.resets_at`
+    - `seven_day_oauth_apps.utilization`, `seven_day_oauth_apps.resets_at`
+    - `seven_day_opus.utilization`, `seven_day_opus.resets_at`
+    - `seven_day_sonnet.utilization`, `seven_day_sonnet.resets_at`
+    - `seven_day_cowork.utilization`, `seven_day_cowork.resets_at`
+    - `iguana_necktie.utilization`, `iguana_necktie.resets_at`
+    - `extra_usage`
+  - `GET https://api.anthropic.com/api/oauth/profile`
+    - plan detection for Max, Pro, Team, Free, or unknown
+- Codex usage API:
+  - `GET https://chatgpt.com/backend-api/wham/usage`
+  - reads `plan_type`, `rate_limit`, `code_review_rate_limit`, `additional_rate_limits`, and `rate_limit_reset_credits`
+  - uses `Chatgpt-Account-Id` when the account id is available from safe auth metadata
+  - does not send a prompt probe
+- Antigravity/Gemini CLI quota summary:
+  - tries `POST https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary`
+  - then `POST https://daily-cloudcode-pa.sandbox.googleapis.com/v1internal:retrieveUserQuotaSummary`
+  - then `POST https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary`
+  - reads `groups[].buckets[].remainingFraction` and `groups[].buckets[].resetTime`
+- Antigravity/Gemini CLI subscription:
+  - `POST https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist`
+  - reads `currentTier`, `paidTier`, `paidTier.availableCredits[]`, and maps `free-tier`, `g1-pro-tier`, `g1-ultra-tier`, and `g1-ultra-lite-tier` to plan labels
+
+Active query failures do not clear previously observed `quota_details`.
 
 For Antigravity credits, the legacy `credits.amount` and `credits.minimum_for_usage` fields are selected from `creditType == "GOOGLE_ONE_AI"` when present, otherwise from the first available credit.
 
