@@ -1142,6 +1142,68 @@ func TestApplyCodexUsageResponseFallsBackToAuthPlan(t *testing.T) {
 	}
 }
 
+func TestUpdateAntigravityQuotaGroupsStoresPanelGroups(t *testing.T) {
+	resetTestStore()
+	store.mu.Lock()
+	store.getOrCreate("ag-groups", "antigravity", "auth-ag-groups")
+	store.mu.Unlock()
+
+	resp := &antigravityQuotaSummaryResponse{Groups: []antigravityQuotaSummaryGroup{{
+		Label:       "Claude and GPT Models",
+		Description: "Premium model quota",
+		Buckets: []antigravityQuotaSummaryBucket{{
+			Label:             "5 hour limit",
+			Description:       "Short window",
+			RemainingFraction: flexibleFloatPtr(0.65),
+			ResetTime:         "2026-06-21T10:00:00Z",
+		}},
+	}}}
+
+	updateAntigravityQuotaGroups("ag-groups", resp)
+
+	entry := store.getByIndex("ag-groups")
+	if entry == nil {
+		t.Fatalf("missing antigravity credential")
+	}
+	if entry.QuotaDetails.Source != "antigravity_quota_summary" {
+		t.Fatalf("source = %q, want antigravity_quota_summary", entry.QuotaDetails.Source)
+	}
+	if len(entry.QuotaDetails.QuotaGroups) != 1 || len(entry.QuotaDetails.QuotaGroups[0].Buckets) != 1 {
+		t.Fatalf("quota_groups = %+v, want one group with one bucket", entry.QuotaDetails.QuotaGroups)
+	}
+	bucket := entry.QuotaDetails.QuotaGroups[0].Buckets[0]
+	if bucket.RemainingFraction == nil || *bucket.RemainingFraction != 0.65 || bucket.ResetTime != "2026-06-21T10:00:00Z" {
+		t.Fatalf("bucket = %+v, want remaining fraction/reset", bucket)
+	}
+}
+
+func TestUpdateAntigravitySubscriptionStoresPanelPlanAndCredits(t *testing.T) {
+	resetTestStore()
+	store.mu.Lock()
+	store.getOrCreate("ag-sub", "antigravity", "auth-ag-sub")
+	store.mu.Unlock()
+
+	resp := &antigravitySubscriptionResponse{}
+	resp.CurrentTier.ID = "free-tier"
+	resp.CurrentTier.Name = "Free"
+	resp.PaidTier.ID = "g1-ultra-tier"
+	resp.PaidTier.Name = "Ultra"
+	resp.PaidTier.AvailableCredits = []loadCodeAssistCredit{{CreditType: "GOOGLE_ONE_AI", CreditAmount: 20, MinimumCreditAmount: 1}}
+
+	updateAntigravitySubscription("ag-sub", resp)
+
+	entry := store.getByIndex("ag-sub")
+	if entry == nil {
+		t.Fatalf("missing antigravity credential")
+	}
+	if entry.QuotaDetails.PlanType != "ultra" {
+		t.Fatalf("plan_type = %q, want ultra", entry.QuotaDetails.PlanType)
+	}
+	if entry.QuotaDetails.Credits == nil || entry.QuotaDetails.Credits.PaidTierID != "g1-ultra-tier" || entry.QuotaDetails.Credits.Amount == nil || *entry.QuotaDetails.Credits.Amount != 20 {
+		t.Fatalf("credits = %+v, want paid tier and credits", entry.QuotaDetails.Credits)
+	}
+}
+
 func flexibleFloatPtr(v flexibleFloat) *flexibleFloat { return &v }
 
 func findQuotaWindow(windows []quotaWindow, name string) *quotaWindow {

@@ -1760,31 +1760,40 @@ func queryLoadCodeAssist(authIndex string) {
 	if cfg.CPABaseURL == "" || cfg.ManagementKey == "" {
 		return
 	}
+	entry := store.getByIndex(authIndex)
+	projectID := ""
+	if entry != nil {
+		projectID = entry.AntigravityProjectID
+	}
+	if projectID != "" {
+		for _, url := range antigravityQuotaSummaryURLs {
+			bodyStr, ok := queryManagementAPICall(authIndex, buildAntigravityQuotaSummaryAPICallPayload(authIndex, projectID, url))
+			if !ok {
+				continue
+			}
+			var quotaResp antigravityQuotaSummaryResponse
+			if err := json.Unmarshal([]byte(bodyStr), &quotaResp); err != nil {
+				callHostLog("error", fmt.Sprintf("credential-usage: parse Antigravity quota summary failed for %s: %v", authIndex, err))
+				continue
+			}
+			if len(quotaResp.Groups) == 0 {
+				continue
+			}
+			updateAntigravityQuotaGroups(authIndex, &quotaResp)
+			break
+		}
+	}
 
-	apiCallPayload, _ := json.Marshal(map[string]any{
-		"auth_index": authIndex,
-		"method":     "POST",
-		"url":        "https://cloudcode-pa.googleapis.com/v1beta:loadCodeAssist",
-		"header": map[string]string{
-			"Authorization": "Bearer $TOKEN$",
-			"Content-Type":  "application/json",
-		},
-		"data": `{"metadata":{"ideType":"ANTIGRAVITY"}}`,
-	})
-	bodyStr, ok := queryManagementAPICall(authIndex, apiCallPayload)
+	bodyStr, ok := queryManagementAPICall(authIndex, buildAntigravitySubscriptionAPICallPayload(authIndex))
 	if !ok {
 		return
 	}
-
-	var assistResp loadCodeAssistResponse
-	if err := json.Unmarshal([]byte(bodyStr), &assistResp); err != nil {
+	var subscriptionResp antigravitySubscriptionResponse
+	if err := json.Unmarshal([]byte(bodyStr), &subscriptionResp); err != nil {
 		applyAntigravityFailureBody(authIndex, bodyStr)
 		return
 	}
-	updateAntigravityQuota(authIndex, &assistResp)
-	if assistResp.CloudAICompanionProject != "" {
-		queryAntigravityAvailableModels(authIndex, assistResp.CloudAICompanionProject)
-	}
+	updateAntigravitySubscription(authIndex, &subscriptionResp)
 }
 
 func queryAntigravityAvailableModels(authIndex, project string) {
