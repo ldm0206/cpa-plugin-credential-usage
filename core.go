@@ -1648,27 +1648,17 @@ func queryCodexQuota(authIndex string) {
 	if cfg.CPABaseURL == "" || cfg.ManagementKey == "" {
 		return
 	}
-	probeBody := `{"model":"gpt-5-codex","input":[{"role":"user","content":[{"type":"input_text","text":"hi"}]}],"stream":true,"store":false}`
-	apiCallPayload, _ := json.Marshal(map[string]any{
-		"auth_index": authIndex,
-		"method":     "POST",
-		"url":        "https://chatgpt.com/backend-api/codex/responses",
-		"header": map[string]string{
-			"Authorization": "Bearer $TOKEN$",
-			"Content-Type":  "application/json",
-			"Accept":        "text/event-stream",
-			"OpenAI-Beta":   "responses=experimental",
-			"Originator":    "codex_cli_rs",
-			"Version":       "0.125.0",
-			"User-Agent":    "codex_cli_rs/0.125.0 (Ubuntu 22.4.0; x86_64) xterm-256color",
-		},
-		"data": probeBody,
-	})
-	apiResp, _ := queryManagementAPICallFull(authIndex, apiCallPayload)
-	if apiResp == nil {
+	entry := store.getByIndex(authIndex)
+	apiResp, ok := queryManagementAPICallFull(authIndex, buildCodexUsageAPICallPayload(authIndex, entry))
+	if !ok || apiResp == nil {
 		return
 	}
-	applyCodexAPIResponse(authIndex, apiResp)
+	var usageResp codexUsageResponse
+	if err := json.Unmarshal([]byte(apiResp.Body), &usageResp); err != nil {
+		callHostLog("error", fmt.Sprintf("credential-usage: parse Codex usage failed for %s: %v", authIndex, err))
+		return
+	}
+	applyCodexUsageResponse(authIndex, &usageResp)
 }
 
 func applyCodexAPIResponse(authIndex string, apiResp *apiCallResponse) {

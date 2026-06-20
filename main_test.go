@@ -997,6 +997,73 @@ func TestCopyQuotaDetailsCopiesPanelFields(t *testing.T) {
 	}
 }
 
+func TestApplyCodexUsageResponseStoresPanelUsagePayload(t *testing.T) {
+	resetTestStore()
+	store.mu.Lock()
+	entry := store.getOrCreate("codex-usage", "codex", "auth-codex-usage")
+	entry.CodexPlanTypeFallback = "plus"
+	entry.CodexSubscriptionActiveUntil = "2026-07-01T00:00:00Z"
+	store.mu.Unlock()
+
+	resp := &codexUsageResponse{
+		PlanType: "pro",
+		RateLimit: &codexRateLimitInfo{
+			Allowed: boolPtr(true),
+			PrimaryWindow: &codexUsageWindow{UsedPercent: flexibleFloatPtr(12.5), LimitWindowSeconds: int64Ptr(18000), ResetAfterSeconds: int64Ptr(3600)},
+			SecondaryWindow: &codexUsageWindow{UsedPercent: flexibleFloatPtr(50), LimitWindowSeconds: int64Ptr(604800), ResetAt: "2026-06-28T00:00:00Z"},
+		},
+		CodeReviewRateLimit: &codexRateLimitInfo{
+			PrimaryWindow: &codexUsageWindow{UsedPercent: flexibleFloatPtr(20), LimitWindowSeconds: int64Ptr(18000)},
+		},
+		AdditionalRateLimits: []codexAdditionalRateLimit{{
+			LimitName: "team_monthly",
+			RateLimit: &codexRateLimitInfo{SecondaryWindow: &codexUsageWindow{UsedPercent: flexibleFloatPtr(75), LimitWindowSeconds: int64Ptr(2592000)}},
+		}},
+		RateLimitResetCredits: &codexRateLimitResetCredits{AvailableCount: int64Ptr(3)},
+	}
+
+	applyCodexUsageResponse("codex-usage", resp)
+
+	entry = store.getByIndex("codex-usage")
+	if entry == nil {
+		t.Fatalf("missing codex credential")
+	}
+	if entry.QuotaDetails.Source != "codex_usage_api" {
+		t.Fatalf("source = %q, want codex_usage_api", entry.QuotaDetails.Source)
+	}
+	if entry.QuotaDetails.PlanType != "pro" {
+		t.Fatalf("plan_type = %q, want pro", entry.QuotaDetails.PlanType)
+	}
+	if entry.QuotaDetails.SubscriptionActiveUntil != "2026-07-01T00:00:00Z" {
+		t.Fatalf("subscription_active_until = %q", entry.QuotaDetails.SubscriptionActiveUntil)
+	}
+	if entry.QuotaDetails.RateLimitResetCreditsAvailableCount == nil || *entry.QuotaDetails.RateLimitResetCreditsAvailableCount != 3 {
+		t.Fatalf("reset credits = %v, want 3", entry.QuotaDetails.RateLimitResetCreditsAvailableCount)
+	}
+	for _, name := range []string{"primary", "secondary", "code_review_primary", "team_monthly_secondary"} {
+		if findQuotaWindow(entry.QuotaDetails.Windows, name) == nil {
+			t.Fatalf("missing codex window %q in %+v", name, entry.QuotaDetails.Windows)
+		}
+	}
+}
+
+func TestApplyCodexUsageResponseFallsBackToAuthPlan(t *testing.T) {
+	resetTestStore()
+	store.mu.Lock()
+	entry := store.getOrCreate("codex-fallback", "codex", "auth-codex-fallback")
+	entry.CodexPlanTypeFallback = "team"
+	store.mu.Unlock()
+
+	applyCodexUsageResponse("codex-fallback", &codexUsageResponse{})
+
+	entry = store.getByIndex("codex-fallback")
+	if entry.QuotaDetails.PlanType != "team" {
+		t.Fatalf("plan_type = %q, want fallback team", entry.QuotaDetails.PlanType)
+	}
+}
+
+func flexibleFloatPtr(v flexibleFloat) *flexibleFloat { return &v }
+
 func findQuotaWindow(windows []quotaWindow, name string) *quotaWindow {
 	for i := range windows {
 		if windows[i].Name == name {
