@@ -75,7 +75,7 @@ func applyCodexUsageResponse(authIndex string, resp *codexUsageResponse) {
 	windows := make([]quotaWindow, 0)
 	windows = appendCodexRateLimitWindows(windows, "", firstCodexRateLimit(resp.RateLimit, resp.RateLimitCamel))
 	windows = appendCodexRateLimitWindows(windows, "code_review", firstCodexRateLimit(resp.CodeReviewRateLimit, resp.CodeReviewRateLimitCamel))
-	for _, additional := range append(resp.AdditionalRateLimits, resp.AdditionalRateLimitsCamel...) {
+	for _, additional := range firstCodexAdditionalRateLimits(resp.AdditionalRateLimits, resp.AdditionalRateLimitsCamel) {
 		name := sanitizeQuotaName(firstNonEmptyStringValue(additional.LimitName, additional.LimitNameCamel, additional.MeteredFeature, additional.MeteredFeatureCamel))
 		if name == "" {
 			name = "additional"
@@ -114,6 +114,13 @@ func firstCodexRateLimit(values ...*codexRateLimitInfo) *codexRateLimitInfo {
 		}
 	}
 	return nil
+}
+
+func firstCodexAdditionalRateLimits(primary, camel []codexAdditionalRateLimit) []codexAdditionalRateLimit {
+	if len(primary) > 0 {
+		return primary
+	}
+	return camel
 }
 
 func appendCodexRateLimitWindows(out []quotaWindow, prefix string, limit *codexRateLimitInfo) []quotaWindow {
