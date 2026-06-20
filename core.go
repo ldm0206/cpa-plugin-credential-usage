@@ -475,32 +475,75 @@ func parseConfig(request []byte) {
 	if len(request) == 0 {
 		return
 	}
-	// The lifecycle request wraps config in a "config_yaml" field
+	// The lifecycle request wraps the YAML plugin config in a "config_yaml" []byte field.
 	var lifecycle struct {
-		ConfigYAML json.RawMessage `json:"config_yaml"`
+		ConfigYAML []byte `json:"config_yaml"`
 	}
 	if err := json.Unmarshal(request, &lifecycle); err != nil {
 		return
 	}
-	configBytes := []byte(lifecycle.ConfigYAML)
+	configBytes := lifecycle.ConfigYAML
 	if len(configBytes) == 0 {
 		return
 	}
-	var raw map[string]any
-	if err := json.Unmarshal(configBytes, &raw); err != nil {
-		return
-	}
-	if v, ok := raw["cpa-base-url"].(string); ok {
+	raw := parsePluginConfigScalars(configBytes)
+	if v := raw["cpa-base-url"]; v != "" {
 		cfg.CPABaseURL = v
 	}
-	if v, ok := raw["management-key"].(string); ok {
+	if v := raw["management-key"]; v != "" {
 		cfg.ManagementKey = v
 	}
-	if v, ok := raw["poll-interval"].(string); ok {
+	if v := raw["poll-interval"]; v != "" {
 		if d, err := time.ParseDuration(v); err == nil {
 			cfg.PollInterval = d
 		}
 	}
+}
+
+func parsePluginConfigScalars(configBytes []byte) map[string]string {
+	var jsonConfig map[string]any
+	if err := json.Unmarshal(configBytes, &jsonConfig); err == nil {
+		out := make(map[string]string, len(jsonConfig))
+		for key, value := range jsonConfig {
+			if text, ok := value.(string); ok {
+				out[key] = strings.TrimSpace(text)
+			}
+		}
+		return out
+	}
+
+	out := make(map[string]string)
+	for _, line := range strings.Split(string(configBytes), "\n") {
+		key, value, ok := strings.Cut(strings.TrimSpace(line), ":")
+		if !ok {
+			continue
+		}
+		key = strings.TrimSpace(key)
+		if key == "" || strings.HasPrefix(key, "#") {
+			continue
+		}
+		out[key] = parseConfigScalar(strings.TrimSpace(value))
+	}
+	return out
+}
+
+func parseConfigScalar(value string) string {
+	if idx := strings.Index(value, " #"); idx >= 0 {
+		value = value[:idx]
+	}
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	if strings.HasPrefix(value, `"`) && strings.HasSuffix(value, `"`) {
+		if unquoted, err := strconv.Unquote(value); err == nil {
+			return unquoted
+		}
+	}
+	if strings.HasPrefix(value, "'") && strings.HasSuffix(value, "'") {
+		return strings.TrimSuffix(strings.TrimPrefix(value, "'"), "'")
+	}
+	return value
 }
 
 // --- Method dispatch ---

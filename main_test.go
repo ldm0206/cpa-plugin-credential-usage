@@ -134,6 +134,30 @@ func TestPluginRegisterUsesInjectedVersion(t *testing.T) {
 	}
 }
 
+func TestParseConfigReadsLifecycleConfigYAMLBytes(t *testing.T) {
+	cfg = pluginConfig{}
+	request, err := json.Marshal(struct {
+		ConfigYAML []byte `json:"config_yaml"`
+	}{
+		ConfigYAML: []byte("cpa-base-url: http://127.0.0.1:8317\nmanagement-key: secret-key\npoll-interval: 30s\n"),
+	})
+	if err != nil {
+		t.Fatalf("marshal lifecycle request: %v", err)
+	}
+
+	parseConfig(request)
+
+	if cfg.CPABaseURL != "http://127.0.0.1:8317" {
+		t.Fatalf("cpa-base-url = %q, want http://127.0.0.1:8317", cfg.CPABaseURL)
+	}
+	if cfg.ManagementKey != "secret-key" {
+		t.Fatalf("management-key = %q, want secret-key", cfg.ManagementKey)
+	}
+	if cfg.PollInterval != 30*time.Second {
+		t.Fatalf("poll-interval = %v, want 30s", cfg.PollInterval)
+	}
+}
+
 func TestManagementRegisterReturnsResourceRoutes(t *testing.T) {
 	raw, err := handleMethod("management.register", nil)
 	if err != nil {
