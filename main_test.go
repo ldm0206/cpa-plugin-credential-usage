@@ -727,7 +727,7 @@ func TestParseAntigravity429StoresGoogleRPCQuotaDetails(t *testing.T) {
 	}
 }
 
-func TestUpdateClaudeUsageQuotaStoresActiveUsageAPIWindows(t *testing.T) {
+func TestUpdateClaudeUsageQuotaStoresPanelWindowsAndExtraUsage(t *testing.T) {
 	resetTestStore()
 	store.mu.Lock()
 	store.getOrCreate("claude-active", "claude", "auth-claude-active")
@@ -738,8 +738,17 @@ func TestUpdateClaudeUsageQuotaStoresActiveUsageAPIWindows(t *testing.T) {
 	resp.FiveHour.ResetsAt = "2026-06-20T15:00:00Z"
 	resp.SevenDay.Utilization = 0.6
 	resp.SevenDay.ResetsAt = "2026-06-24T00:00:00Z"
+	resp.SevenDayOAuthApps.Utilization = 0.7
+	resp.SevenDayOAuthApps.ResetsAt = "2026-06-24T01:00:00Z"
+	resp.SevenDayOpus.Utilization = 0.2
+	resp.SevenDayOpus.ResetsAt = "2026-06-24T02:00:00Z"
 	resp.SevenDaySonnet.Utilization = 0.8
 	resp.SevenDaySonnet.ResetsAt = "2026-06-25T00:00:00Z"
+	resp.SevenDayCowork.Utilization = 0.1
+	resp.SevenDayCowork.ResetsAt = "2026-06-26T00:00:00Z"
+	resp.IguanaNecktie.Utilization = 0.3
+	resp.IguanaNecktie.ResetsAt = "2026-06-27T00:00:00Z"
+	resp.ExtraUsage = &claudeExtraUsage{IsEnabled: true, MonthlyLimit: 200, UsedCredits: 50, Utilization: float64Ptr(0.25)}
 
 	updateClaudeUsageQuota("claude-active", resp)
 
@@ -750,12 +759,41 @@ func TestUpdateClaudeUsageQuotaStoresActiveUsageAPIWindows(t *testing.T) {
 	if entry.QuotaDetails.Source != "anthropic_usage_api" {
 		t.Fatalf("source = %q, want anthropic_usage_api", entry.QuotaDetails.Source)
 	}
-	if len(entry.QuotaDetails.Windows) != 3 {
-		t.Fatalf("windows = %+v, want 3 active usage windows", entry.QuotaDetails.Windows)
+	for _, name := range []string{"5h", "7d", "7d_oauth_apps", "7d_opus", "7d_sonnet", "7d_cowork", "iguana_necktie"} {
+		if findQuotaWindow(entry.QuotaDetails.Windows, name) == nil {
+			t.Fatalf("missing Claude window %q: %+v", name, entry.QuotaDetails.Windows)
+		}
 	}
-	sonnet := findQuotaWindow(entry.QuotaDetails.Windows, "7d_sonnet")
-	if sonnet == nil || sonnet.Utilization == nil || *sonnet.Utilization != 0.8 || sonnet.ResetAt != "2026-06-25T00:00:00Z" {
-		t.Fatalf("7d_sonnet window = %+v, want utilization/reset", sonnet)
+	if entry.QuotaDetails.ExtraUsage == nil || entry.QuotaDetails.ExtraUsage.MonthlyLimit != 200 || entry.QuotaDetails.ExtraUsage.Utilization == nil || *entry.QuotaDetails.ExtraUsage.Utilization != 0.25 {
+		t.Fatalf("extra_usage = %+v, want panel extra usage", entry.QuotaDetails.ExtraUsage)
+	}
+}
+
+func TestUpdateClaudePlanFromProfileStoresPlanType(t *testing.T) {
+	cases := []struct {
+		name string
+		resp claudeProfileResponse
+		want string
+	}{
+		{name: "max", resp: claudeProfileResponse{Account: claudeProfileAccount{HasClaudeMax: boolPtr(true)}}, want: "plan_max"},
+		{name: "pro", resp: claudeProfileResponse{Account: claudeProfileAccount{HasClaudePro: boolPtr(true)}}, want: "plan_pro"},
+		{name: "team", resp: claudeProfileResponse{Organization: claudeProfileOrganization{Type: "claude_team", SubscriptionStatus: "active"}}, want: "plan_team"},
+		{name: "free", resp: claudeProfileResponse{Account: claudeProfileAccount{HasClaudeMax: boolPtr(false), HasClaudePro: boolPtr(false)}}, want: "plan_free"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resetTestStore()
+			store.mu.Lock()
+			store.getOrCreate("claude-profile", "claude", "auth-claude-profile")
+			store.mu.Unlock()
+
+			updateClaudePlanFromProfile("claude-profile", &tc.resp)
+
+			entry := store.getByIndex("claude-profile")
+			if entry.QuotaDetails.PlanType != tc.want {
+				t.Fatalf("plan_type = %q, want %q", entry.QuotaDetails.PlanType, tc.want)
+			}
+		})
 	}
 }
 

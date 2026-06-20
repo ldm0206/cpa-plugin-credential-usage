@@ -1479,18 +1479,19 @@ type apiCallResponse struct {
 }
 
 type claudeUsageResponse struct {
-	FiveHour struct {
-		Utilization float64 `json:"utilization"`
-		ResetsAt    string  `json:"resets_at"`
-	} `json:"five_hour"`
-	SevenDay struct {
-		Utilization float64 `json:"utilization"`
-		ResetsAt    string  `json:"resets_at"`
-	} `json:"seven_day"`
-	SevenDaySonnet struct {
-		Utilization float64 `json:"utilization"`
-		ResetsAt    string  `json:"resets_at"`
-	} `json:"seven_day_sonnet"`
+	FiveHour          claudeUsageWindow `json:"five_hour"`
+	SevenDay          claudeUsageWindow `json:"seven_day"`
+	SevenDayOAuthApps claudeUsageWindow `json:"seven_day_oauth_apps"`
+	SevenDayOpus      claudeUsageWindow `json:"seven_day_opus"`
+	SevenDaySonnet    claudeUsageWindow `json:"seven_day_sonnet"`
+	SevenDayCowork    claudeUsageWindow `json:"seven_day_cowork"`
+	IguanaNecktie     claudeUsageWindow `json:"iguana_necktie"`
+	ExtraUsage        *claudeExtraUsage `json:"extra_usage"`
+}
+
+type claudeUsageWindow struct {
+	Utilization float64 `json:"utilization"`
+	ResetsAt    string  `json:"resets_at"`
 }
 
 type loadCodeAssistResponse struct {
@@ -1548,28 +1549,27 @@ func queryClaudeUsage(authIndex string) {
 		return
 	}
 
-	apiCallPayload, _ := json.Marshal(map[string]any{
-		"auth_index": authIndex,
-		"method":     "GET",
-		"url":        "https://api.anthropic.com/api/oauth/usage",
-		"header": map[string]string{
-			"Accept":         "application/json, text/plain, */*",
-			"Authorization":  "Bearer $TOKEN$",
-			"Content-Type":   "application/json",
-			"anthropic-beta": "oauth-2025-04-20",
-			"User-Agent":     "claude-code/2.1.7",
-		},
-	})
-	bodyStr, ok := queryManagementAPICall(authIndex, apiCallPayload)
+	bodyStr, ok := queryManagementAPICall(authIndex, buildClaudeUsageAPICallPayload(authIndex))
 	if !ok {
 		return
 	}
-
 	var usageResp claudeUsageResponse
 	if err := json.Unmarshal([]byte(bodyStr), &usageResp); err != nil {
+		callHostLog("error", fmt.Sprintf("credential-usage: parse Claude usage failed for %s: %v", authIndex, err))
 		return
 	}
 	updateClaudeUsageQuota(authIndex, &usageResp)
+
+	profileBody, profileOK := queryManagementAPICall(authIndex, buildClaudeProfileAPICallPayload(authIndex))
+	if !profileOK {
+		return
+	}
+	var profileResp claudeProfileResponse
+	if err := json.Unmarshal([]byte(profileBody), &profileResp); err != nil {
+		callHostLog("error", fmt.Sprintf("credential-usage: parse Claude profile failed for %s: %v", authIndex, err))
+		return
+	}
+	updateClaudePlanFromProfile(authIndex, &profileResp)
 }
 
 func queryManagementAPICall(authIndex string, apiCallPayload []byte) (string, bool) {
@@ -1667,36 +1667,39 @@ func updateClaudeUsageQuota(authIndex string, resp *claudeUsageResponse) {
 	defer store.mu.Unlock()
 
 	entry := store.data[authIndex]
-	if entry == nil {
+	if entry == nil || resp == nil {
 		return
 	}
 
 	details := entry.QuotaDetails
+	details.Source = "anthropic_usage_api"
 	details.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
-	if details.Source == "" {
-		details.Source = "anthropic_usage_api"
+	windows := []struct {
+		name   string
+		label  string
+		window claudeUsageWindow
+	}{
+		{name: "5h", label: "5 hour limit", window: resp.FiveHour},
+		{name: "7d", label: "weekly limit", window: resp.SevenDay},
+		{name: "7d_oauth_apps", label: "weekly OAuth apps limit", window: resp.SevenDayOAuthApps},
+		{name: "7d_opus", label: "weekly Opus limit", window: resp.SevenDayOpus},
+		{name: "7d_sonnet", label: "weekly Sonnet limit", window: resp.SevenDaySonnet},
+		{name: "7d_cowork", label: "weekly cowork limit", window: resp.SevenDayCowork},
+		{name: "iguana_necktie", label: "iguana necktie limit", window: resp.IguanaNecktie},
 	}
-	details.Windows = upsertQuotaWindow(details.Windows, quotaWindow{
-		Name:        "5h",
-		Label:       "5 hour limit",
-		Utilization: float64Ptr(resp.FiveHour.Utilization),
-		ResetAt:     resp.FiveHour.ResetsAt,
-	})
-	if resp.SevenDay.ResetsAt != "" || resp.SevenDay.Utilization != 0 {
+	for _, item := range windows {
+		if item.window.ResetsAt == "" && item.window.Utilization == 0 {
+			continue
+		}
 		details.Windows = upsertQuotaWindow(details.Windows, quotaWindow{
-			Name:        "7d",
-			Label:       "weekly limit",
-			Utilization: float64Ptr(resp.SevenDay.Utilization),
-			ResetAt:     resp.SevenDay.ResetsAt,
+			Name:        item.name,
+			Label:       item.label,
+			Utilization: float64Ptr(item.window.Utilization),
+			ResetAt:     item.window.ResetsAt,
 		})
 	}
-	if resp.SevenDaySonnet.ResetsAt != "" || resp.SevenDaySonnet.Utilization != 0 {
-		details.Windows = upsertQuotaWindow(details.Windows, quotaWindow{
-			Name:        "7d_sonnet",
-			Label:       "weekly Sonnet limit",
-			Utilization: float64Ptr(resp.SevenDaySonnet.Utilization),
-			ResetAt:     resp.SevenDaySonnet.ResetsAt,
-		})
+	if resp.ExtraUsage != nil {
+		details.ExtraUsage = copyClaudeExtraUsage(resp.ExtraUsage)
 	}
 	entry.QuotaDetails = details
 }
