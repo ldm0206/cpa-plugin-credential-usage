@@ -1347,6 +1347,8 @@ func queryProviderQuotaDetails() {
 			queryLoadCodeAssist(entry.AuthIndex)
 		case "claude":
 			queryClaudeUsage(entry.AuthIndex)
+		case "codex":
+			queryCodexQuota(entry.AuthIndex)
 		}
 	}
 }
@@ -1356,8 +1358,9 @@ func queryAntigravityCredits() {
 }
 
 type apiCallResponse struct {
-	StatusCode int    `json:"status_code"`
-	Body       string `json:"body"`
+	StatusCode int                 `json:"status_code"`
+	Header     map[string][]string `json:"header"`
+	Body       string              `json:"body"`
 }
 
 type claudeUsageResponse struct {
@@ -1455,6 +1458,14 @@ func queryClaudeUsage(authIndex string) {
 }
 
 func queryManagementAPICall(authIndex string, apiCallPayload []byte) (string, bool) {
+	apiResp, ok := queryManagementAPICallFull(authIndex, apiCallPayload)
+	if !ok || apiResp == nil {
+		return "", false
+	}
+	return apiResp.Body, true
+}
+
+func queryManagementAPICallFull(authIndex string, apiCallPayload []byte) (*apiCallResponse, bool) {
 	// Build the host.http.do request
 	// Host expects: method, url, headers (plural, map[string][]string), body ([]byte = base64 in JSON)
 	targetURL := cfg.CPABaseURL + "/v0/management/api-call"
@@ -1470,14 +1481,14 @@ func queryManagementAPICall(authIndex string, apiCallPayload []byte) (string, bo
 	resp, err := callHostWithResponse("host.http.do", hostPayload)
 	if err != nil {
 		callHostLog("error", fmt.Sprintf("credential-usage: host.http.do failed for %s: %v", authIndex, err))
-		return "", false
+		return nil, false
 	}
 
 	// Unwrap envelope
 	var env envelope
 	if err := json.Unmarshal(resp, &env); err != nil || !env.OK {
 		callHostLog("error", fmt.Sprintf("credential-usage: host.http.do envelope error for %s: %v", authIndex, err))
-		return "", false
+		return nil, false
 	}
 
 	// Unwrap HTTP response
@@ -1488,11 +1499,11 @@ func queryManagementAPICall(authIndex string, apiCallPayload []byte) (string, bo
 	}
 	if err := json.Unmarshal(env.Result, &httpResp); err != nil {
 		callHostLog("error", fmt.Sprintf("credential-usage: host.http.do parse error for %s: %v", authIndex, err))
-		return "", false
+		return nil, false
 	}
 
 	if httpResp.StatusCode != 200 {
-		return "", false
+		return nil, false
 	}
 
 	// Decode base64 body if present
@@ -1510,12 +1521,55 @@ func queryManagementAPICall(authIndex string, apiCallPayload []byte) (string, bo
 	// Parse apiCallResponse
 	var apiResp apiCallResponse
 	if err := json.Unmarshal([]byte(bodyStr), &apiResp); err != nil {
-		return bodyStr, true
+		return &apiCallResponse{StatusCode: http.StatusOK, Body: bodyStr}, true
 	}
 	if apiResp.StatusCode != 200 {
-		return "", false
+		return &apiResp, false
 	}
-	return apiResp.Body, true
+	return &apiResp, true
+}
+
+func queryCodexQuota(authIndex string) {
+	if cfg.CPABaseURL == "" || cfg.ManagementKey == "" {
+		return
+	}
+	probeBody := `{"model":"gpt-5-codex","input":[{"role":"user","content":[{"type":"input_text","text":"hi"}]}],"stream":true,"store":false}`
+	apiCallPayload, _ := json.Marshal(map[string]any{
+		"auth_index": authIndex,
+		"method":     "POST",
+		"url":        "https://chatgpt.com/backend-api/codex/responses",
+		"header": map[string]string{
+			"Authorization": "Bearer $TOKEN$",
+			"Content-Type":  "application/json",
+			"Accept":        "text/event-stream",
+			"OpenAI-Beta":   "responses=experimental",
+			"Originator":    "codex_cli_rs",
+			"Version":       "0.125.0",
+			"User-Agent":    "codex_cli_rs/0.125.0 (Ubuntu 22.4.0; x86_64) xterm-256color",
+		},
+		"data": probeBody,
+	})
+	apiResp, _ := queryManagementAPICallFull(authIndex, apiCallPayload)
+	if apiResp == nil {
+		return
+	}
+	applyCodexAPIResponse(authIndex, apiResp)
+}
+
+func applyCodexAPIResponse(authIndex string, apiResp *apiCallResponse) {
+	if apiResp == nil {
+		return
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	entry := store.data[authIndex]
+	if entry == nil {
+		return
+	}
+	parseCodexHeaders(entry, apiResp.Header)
+	if apiResp.StatusCode == http.StatusTooManyRequests {
+		parseCodex429(entry, apiResp.Body)
+	}
 }
 
 func updateClaudeUsageQuota(authIndex string, resp *claudeUsageResponse) {

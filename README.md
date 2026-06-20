@@ -235,6 +235,10 @@ Periodically queries upstream APIs through CPA's `api-call` endpoint:
   - `five_hour.utilization`, `five_hour.resets_at`
   - `seven_day.utilization`, `seven_day.resets_at`
   - `seven_day_sonnet.utilization`, `seven_day_sonnet.resets_at`
+- Codex minimal quota probe (`https://chatgpt.com/backend-api/codex/responses`):
+  - sends a tiny `gpt-5-codex` `"hi"` probe with `stream: true` and `store: false`
+  - reads the same `x-codex-primary-*`, `x-codex-secondary-*`, and 429 body fields as passive mode
+  - may consume a small amount of Codex quota; use a conservative `poll-interval`
 - Antigravity/Gemini CLI `loadCodeAssist`:
   - `cloudaicompanionProject`
   - `currentTier.id/name/description`

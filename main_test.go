@@ -479,6 +479,44 @@ func TestCredentialStoreReturnsDeepCopy(t *testing.T) {
 
 func boolPtr(v bool) *bool { return &v }
 
+func TestApplyCodexAPIResponseStoresHeadersAnd429Body(t *testing.T) {
+	resetTestStore()
+	store.mu.Lock()
+	store.getOrCreate("codex-active", "codex", "auth-codex-active")
+	store.mu.Unlock()
+
+	applyCodexAPIResponse("codex-active", &apiCallResponse{
+		StatusCode: http.StatusTooManyRequests,
+		Header: map[string][]string{
+			"x-codex-primary-used-percent":          {"101"},
+			"x-codex-primary-reset-after-seconds":   {"86400"},
+			"x-codex-primary-window-minutes":        {"10080"},
+			"x-codex-secondary-used-percent":        {"33"},
+			"x-codex-secondary-reset-after-seconds": {"1200"},
+			"x-codex-secondary-window-minutes":      {"300"},
+		},
+		Body: `{"error":{"type":"usage_limit_reached","message":"Usage limit reached","resets_in_seconds":3600,"plan_type":"pro"}}`,
+	})
+
+	entry := store.getByIndex("codex-active")
+	if entry == nil {
+		t.Fatalf("missing codex credential")
+	}
+	if entry.QuotaDetails.Source != "failure_body" {
+		t.Fatalf("source = %q, want failure_body after 429 body", entry.QuotaDetails.Source)
+	}
+	if entry.QuotaDetails.PlanType != "pro" || entry.QuotaDetails.ErrorType != "usage_limit_reached" {
+		t.Fatalf("quota_details = %+v, want plan/error type", entry.QuotaDetails)
+	}
+	primary := findQuotaWindow(entry.QuotaDetails.Windows, "primary")
+	if primary == nil || primary.UsedPercent == nil || *primary.UsedPercent != 101 {
+		t.Fatalf("primary window = %+v, want header-derived usage", primary)
+	}
+	if entry.QuotaDetails.Available == nil || *entry.QuotaDetails.Available {
+		t.Fatalf("available = %v, want false", entry.QuotaDetails.Available)
+	}
+}
+
 func TestParseCodexHeadersStoresPrimarySecondaryWindows(t *testing.T) {
 	entry := &credentialEntry{}
 	parseCodexHeaders(entry, map[string][]string{
