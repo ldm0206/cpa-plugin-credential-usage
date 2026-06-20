@@ -767,6 +767,9 @@ func TestUpdateClaudeUsageQuotaStoresPanelWindowsAndExtraUsage(t *testing.T) {
 	if entry.QuotaDetails.ExtraUsage == nil || entry.QuotaDetails.ExtraUsage.MonthlyLimit != 200 || entry.QuotaDetails.ExtraUsage.Utilization == nil || *entry.QuotaDetails.ExtraUsage.Utilization != 0.25 {
 		t.Fatalf("extra_usage = %+v, want panel extra usage", entry.QuotaDetails.ExtraUsage)
 	}
+	if w := findQuotaWindow(entry.QuotaDetails.Windows, "iguana_necktie"); w == nil || w.Utilization == nil || *w.Utilization != 0.3 {
+		t.Fatalf("iguana_necktie window = %+v, want utilization 0.3", w)
+	}
 }
 
 func TestUpdateClaudePlanFromProfileStoresPlanType(t *testing.T) {
@@ -794,6 +797,82 @@ func TestUpdateClaudePlanFromProfileStoresPlanType(t *testing.T) {
 				t.Fatalf("plan_type = %q, want %q", entry.QuotaDetails.PlanType, tc.want)
 			}
 		})
+	}
+}
+
+func TestResolveClaudePlanTypeNilBooleansAndNonTeam(t *testing.T) {
+	t.Run("nil booleans non-team org returns empty", func(t *testing.T) {
+		got := resolveClaudePlanType(&claudeProfileResponse{
+			Organization: claudeProfileOrganization{Type: "personal", SubscriptionStatus: "active"},
+		})
+		if got != "" {
+			t.Fatalf("resolveClaudePlanType = %q, want empty string (nil booleans + non-team org is unresolvable)", got)
+		}
+	})
+	t.Run("nil booleans team org inactive subscription returns empty", func(t *testing.T) {
+		got := resolveClaudePlanType(&claudeProfileResponse{
+			Organization: claudeProfileOrganization{Type: "claude_team", SubscriptionStatus: "inactive"},
+		})
+		if got != "" {
+			t.Fatalf("resolveClaudePlanType = %q, want empty string (nil booleans + inactive team org is unresolvable)", got)
+		}
+	})
+	t.Run("nil input returns empty", func(t *testing.T) {
+		got := resolveClaudePlanType(nil)
+		if got != "" {
+			t.Fatalf("resolveClaudePlanType(nil) = %q, want empty string", got)
+		}
+	})
+}
+
+func TestUpdateClaudeUsageQuotaNilResponseDoesNotPanicOrMutate(t *testing.T) {
+	resetTestStore()
+	store.mu.Lock()
+	store.getOrCreate("claude-nil-test", "claude", "auth-claude-nil-test")
+	store.mu.Unlock()
+
+	// Pre-populate quota details.
+	store.mu.Lock()
+	entry := store.data["claude-nil-test"]
+	entry.QuotaDetails.Source = "pre_existing"
+	entry.QuotaDetails.PlanType = "plan_pro"
+	entry.QuotaDetails.Windows = []quotaWindow{{Name: "5h", Utilization: float64Ptr(0.5)}}
+	store.mu.Unlock()
+
+	updateClaudeUsageQuota("claude-nil-test", nil)
+
+	entry = store.getByIndex("claude-nil-test")
+	if entry.QuotaDetails.Source != "pre_existing" {
+		t.Fatalf("source mutated to %q, want pre_existing", entry.QuotaDetails.Source)
+	}
+	if entry.QuotaDetails.PlanType != "plan_pro" {
+		t.Fatalf("plan_type mutated to %q, want plan_pro", entry.QuotaDetails.PlanType)
+	}
+	if len(entry.QuotaDetails.Windows) != 1 || entry.QuotaDetails.Windows[0].Name != "5h" {
+		t.Fatalf("windows mutated to %+v, want unchanged [5h]", entry.QuotaDetails.Windows)
+	}
+}
+
+func TestUpdateClaudePlanFromProfileNilResponseDoesNotPanicOrMutate(t *testing.T) {
+	resetTestStore()
+	store.mu.Lock()
+	store.getOrCreate("claude-nil-plan", "claude", "auth-claude-nil-plan")
+	store.mu.Unlock()
+
+	store.mu.Lock()
+	entry := store.data["claude-nil-plan"]
+	entry.QuotaDetails.PlanType = "plan_pro"
+	entry.QuotaDetails.Source = "pre_existing"
+	store.mu.Unlock()
+
+	updateClaudePlanFromProfile("claude-nil-plan", nil)
+
+	entry = store.getByIndex("claude-nil-plan")
+	if entry.QuotaDetails.PlanType != "plan_pro" {
+		t.Fatalf("plan_type mutated to %q, want plan_pro", entry.QuotaDetails.PlanType)
+	}
+	if entry.QuotaDetails.Source != "pre_existing" {
+		t.Fatalf("source mutated to %q, want pre_existing", entry.QuotaDetails.Source)
 	}
 }
 
