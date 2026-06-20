@@ -57,16 +57,23 @@ type usageSummary struct {
 }
 
 type quotaDetails struct {
-	Source          string            `json:"source,omitempty"`
-	UpdatedAt       string            `json:"updated_at,omitempty"`
-	Available       *bool             `json:"available,omitempty"`
-	Windows         []quotaWindow     `json:"windows,omitempty"`
-	OverallResetAt  string            `json:"overall_reset_at,omitempty"`
-	RateLimits      *rateLimitDetails `json:"rate_limits,omitempty"`
-	Credits         *creditDetails    `json:"credits,omitempty"`
-	ResetsAt        string            `json:"resets_at,omitempty"`
-	ResetsInSeconds *int64            `json:"resets_in_seconds,omitempty"`
-	Detail          string            `json:"detail,omitempty"`
+	Source                           string            `json:"source,omitempty"`
+	UpdatedAt                        string            `json:"updated_at,omitempty"`
+	Available                        *bool             `json:"available,omitempty"`
+	Windows                          []quotaWindow     `json:"windows,omitempty"`
+	OverallResetAt                   string            `json:"overall_reset_at,omitempty"`
+	RateLimits                       *rateLimitDetails `json:"rate_limits,omitempty"`
+	Credits                          *creditDetails    `json:"credits,omitempty"`
+	ResetsAt                         string            `json:"resets_at,omitempty"`
+	ResetsInSeconds                  *int64            `json:"resets_in_seconds,omitempty"`
+	PlanType                         string            `json:"plan_type,omitempty"`
+	ErrorType                        string            `json:"error_type,omitempty"`
+	ErrorStatus                      string            `json:"error_status,omitempty"`
+	ErrorReason                      string            `json:"error_reason,omitempty"`
+	Model                            string            `json:"model,omitempty"`
+	RetryDelay                       string            `json:"retry_delay,omitempty"`
+	PrimaryOverSecondaryLimitPercent *float64          `json:"primary_over_secondary_limit_percent,omitempty"`
+	Detail                           string            `json:"detail,omitempty"`
 }
 
 type quotaWindow struct {
@@ -74,14 +81,18 @@ type quotaWindow struct {
 	Label              string   `json:"label,omitempty"`
 	Status             string   `json:"status,omitempty"`
 	Utilization        *float64 `json:"utilization,omitempty"`
+	UsedPercent        *float64 `json:"used_percent,omitempty"`
 	SurpassedThreshold *bool    `json:"surpassed_threshold,omitempty"`
 	ResetAt            string   `json:"reset_at,omitempty"`
+	ResetAfterSeconds  *int64   `json:"reset_after_seconds,omitempty"`
+	WindowMinutes      *int64   `json:"window_minutes,omitempty"`
 }
 
 type rateLimitDetails struct {
 	Requests     *rateLimitBucket `json:"requests,omitempty"`
 	InputTokens  *rateLimitBucket `json:"input_tokens,omitempty"`
 	OutputTokens *rateLimitBucket `json:"output_tokens,omitempty"`
+	Tokens       *rateLimitBucket `json:"tokens,omitempty"`
 }
 
 type rateLimitBucket struct {
@@ -91,9 +102,59 @@ type rateLimitBucket struct {
 }
 
 type creditDetails struct {
+	Amount                  *float64      `json:"amount,omitempty"`
+	MinimumForUsage         *float64      `json:"minimum_for_usage,omitempty"`
+	PaidTierID              string        `json:"paid_tier_id,omitempty"`
+	PaidTierName            string        `json:"paid_tier_name,omitempty"`
+	CurrentTierID           string        `json:"current_tier_id,omitempty"`
+	CurrentTierName         string        `json:"current_tier_name,omitempty"`
+	CloudAICompanionProject string        `json:"cloudaicompanion_project,omitempty"`
+	Items                   []creditItem  `json:"items,omitempty"`
+	IneligibleTiers         []tierProblem `json:"ineligible_tiers,omitempty"`
+	AllowedTiers            []allowedTier `json:"allowed_tiers,omitempty"`
+}
+
+type creditItem struct {
+	CreditType      string   `json:"credit_type,omitempty"`
 	Amount          *float64 `json:"amount,omitempty"`
 	MinimumForUsage *float64 `json:"minimum_for_usage,omitempty"`
-	PaidTierID      string   `json:"paid_tier_id,omitempty"`
+}
+
+type flexibleFloat float64
+
+func (f *flexibleFloat) UnmarshalJSON(raw []byte) error {
+	value := strings.TrimSpace(string(raw))
+	if value == "" || value == "null" {
+		*f = 0
+		return nil
+	}
+	var asString string
+	if err := json.Unmarshal(raw, &asString); err == nil {
+		value = strings.TrimSpace(asString)
+	}
+	if value == "" {
+		*f = 0
+		return nil
+	}
+	n, err := strconv.ParseFloat(value, 64)
+	if err != nil {
+		return err
+	}
+	*f = flexibleFloat(n)
+	return nil
+}
+
+type tierProblem struct {
+	TierID        string `json:"tier_id,omitempty"`
+	TierName      string `json:"tier_name,omitempty"`
+	ReasonCode    string `json:"reason_code,omitempty"`
+	ReasonMessage string `json:"reason_message,omitempty"`
+}
+
+type allowedTier struct {
+	ID        string `json:"id,omitempty"`
+	Name      string `json:"name,omitempty"`
+	IsDefault *bool  `json:"is_default,omitempty"`
 }
 
 type credentialEntry struct {
@@ -299,9 +360,15 @@ type usageFailure struct {
 }
 
 type usageDetail struct {
-	InputTokens  int64 `json:"input_tokens"`
-	OutputTokens int64 `json:"output_tokens"`
-	TotalTokens  int64 `json:"total_tokens"`
+	InputTokens         int64  `json:"input_tokens"`
+	OutputTokens        int64  `json:"output_tokens"`
+	ReasoningTokens     int64  `json:"reasoning_tokens"`
+	CachedTokens        int64  `json:"cached_tokens"`
+	CacheReadTokens     int64  `json:"cache_read_tokens"`
+	CacheCreationTokens int64  `json:"cache_creation_tokens"`
+	TotalTokens         int64  `json:"total_tokens"`
+	ReasoningEffort     string `json:"reasoning_effort"`
+	ServiceTier         string `json:"service_tier"`
 }
 
 func handleUsage(request []byte) ([]byte, error) {
@@ -348,32 +415,48 @@ func parseResponseHeadersLocked(entry *credentialEntry, provider string, headers
 	switch provider {
 	case "claude":
 		parseClaudeHeaders(entry, headers)
+	case "codex":
+		parseCodexHeaders(entry, headers)
 	default:
 		if v := firstHeader(headers, "Retry-After"); v != "" {
-			available := true
-			details := quotaDetails{
-				Available: &available,
-				Source:    "response_headers",
-				UpdatedAt: time.Now().UTC().Format(time.RFC3339),
-			}
-			if secs, err := strconv.ParseInt(strings.TrimSpace(v), 10, 64); err == nil {
-				details.ResetsAt = time.Now().UTC().Add(time.Duration(secs) * time.Second).Format(time.RFC3339)
-				details.ResetsInSeconds = int64Ptr(secs)
-				details.Detail = fmt.Sprintf("Retry-After: %ds", secs)
-			}
-			entry.QuotaDetails = details
+			parseRetryAfterQuota(entry, "response_headers", v)
 		}
 	}
+}
+
+func parseRetryAfterQuota(entry *credentialEntry, source, value string) {
+	details := entry.QuotaDetails
+	if !parseRetryAfterIntoDetails(&details, value) {
+		return
+	}
+	details.Source = source
+	details.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+	entry.QuotaDetails = details
+}
+
+func parseRetryAfterIntoDetails(details *quotaDetails, value string) bool {
+	secs, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64)
+	if err != nil {
+		return false
+	}
+	available := false
+	details.Available = &available
+	details.ResetsAt = time.Now().UTC().Add(time.Duration(secs) * time.Second).Format(time.RFC3339)
+	details.ResetsInSeconds = int64Ptr(secs)
+	details.Detail = fmt.Sprintf("Retry-After: %ds", secs)
+	return true
 }
 
 func parseClaudeHeaders(entry *credentialEntry, headers map[string][]string) {
 	details := quotaDetails{UpdatedAt: time.Now().UTC().Format(time.RFC3339)}
 	available := true
 	hasDetails := false
+	source := ""
 
 	if window, ok := anthropicQuotaWindow(headers, "5h", "5h", "5 hour limit", true); ok {
 		details.Windows = append(details.Windows, window)
 		hasDetails = true
+		source = "anthropic_headers"
 		if strings.EqualFold(window.Status, "rejected") {
 			available = false
 		}
@@ -381,10 +464,15 @@ func parseClaudeHeaders(entry *credentialEntry, headers map[string][]string) {
 	if window, ok := anthropicQuotaWindow(headers, "7d", "7d", "weekly limit", true); ok {
 		details.Windows = append(details.Windows, window)
 		hasDetails = true
+		source = "anthropic_headers"
+		if strings.EqualFold(window.Status, "rejected") {
+			available = false
+		}
 	}
 	if v := firstHeader(headers, "anthropic-ratelimit-unified-reset"); v != "" {
 		details.OverallResetAt = v
 		hasDetails = true
+		source = "anthropic_headers"
 	}
 
 	rateLimits := &rateLimitDetails{
@@ -405,10 +493,40 @@ func parseClaudeHeaders(entry *credentialEntry, headers map[string][]string) {
 		),
 	}
 	if !rateLimits.empty() {
+		source = "anthropic_headers"
+	}
+	if rateLimits.Requests == nil {
+		rateLimits.Requests = buildRateLimitBucket(
+			firstHeaderInt(headers, "x-ratelimit-limit-requests"),
+			firstHeaderInt(headers, "x-ratelimit-remaining-requests"),
+			firstHeader(headers, "x-ratelimit-reset-requests"),
+		)
+		if rateLimits.Requests != nil && source == "" {
+			source = "response_headers"
+		}
+	}
+	rateLimits.Tokens = buildRateLimitBucket(
+		firstHeaderInt(headers, "x-ratelimit-limit-tokens"),
+		firstHeaderInt(headers, "x-ratelimit-remaining-tokens"),
+		firstHeader(headers, "x-ratelimit-reset-tokens"),
+	)
+	if rateLimits.Tokens != nil && source == "" {
+		source = "response_headers"
+	}
+	if !rateLimits.empty() {
 		details.RateLimits = rateLimits
 		hasDetails = true
 		if rateLimits.Requests != nil && rateLimits.Requests.Remaining != nil && *rateLimits.Requests.Remaining == 0 {
 			available = false
+		}
+	}
+	if v := firstHeader(headers, "Retry-After"); v != "" {
+		if parseRetryAfterIntoDetails(&details, v) {
+			hasDetails = true
+			available = false
+			if source == "" {
+				source = "response_headers"
+			}
 		}
 	}
 
@@ -422,15 +540,21 @@ func parseClaudeHeaders(entry *credentialEntry, headers map[string][]string) {
 	if rateLimits.OutputTokens != nil && rateLimits.OutputTokens.Remaining != nil && rateLimits.OutputTokens.Limit != nil {
 		parts = append(parts, fmt.Sprintf("Output tokens: %d/%d", *rateLimits.OutputTokens.Remaining, *rateLimits.OutputTokens.Limit))
 	}
-	if len(parts) > 0 {
+	if rateLimits.Tokens != nil && rateLimits.Tokens.Remaining != nil && rateLimits.Tokens.Limit != nil {
+		parts = append(parts, fmt.Sprintf("Tokens: %d/%d", *rateLimits.Tokens.Remaining, *rateLimits.Tokens.Limit))
+	}
+	if len(parts) > 0 && details.Detail == "" {
 		details.Detail = strings.Join(parts, ", ")
 	}
 
 	if !hasDetails {
 		return
 	}
+	if existing := quotaWindowByName(entry.QuotaDetails.Windows, "7d_sonnet"); existing != nil {
+		details.Windows = upsertQuotaWindow(details.Windows, *existing)
+	}
 	details.Available = &available
-	details.Source = "anthropic_headers"
+	details.Source = source
 	entry.QuotaDetails = details
 }
 
@@ -469,13 +593,84 @@ func buildRateLimitBucket(limit, remaining *int64, resetAt string) *rateLimitBuc
 }
 
 func (limits *rateLimitDetails) empty() bool {
-	return limits == nil || (limits.Requests == nil && limits.InputTokens == nil && limits.OutputTokens == nil)
+	return limits == nil || (limits.Requests == nil && limits.InputTokens == nil && limits.OutputTokens == nil && limits.Tokens == nil)
+}
+
+func parseCodexHeaders(entry *credentialEntry, headers map[string][]string) {
+	details := quotaDetails{UpdatedAt: time.Now().UTC().Format(time.RFC3339)}
+	available := true
+	hasDetails := false
+
+	if window, ok := codexQuotaWindow(headers, "primary", "primary"); ok {
+		details.Windows = append(details.Windows, window)
+		hasDetails = true
+		if window.UsedPercent != nil && *window.UsedPercent >= 100 {
+			available = false
+		}
+	}
+	if window, ok := codexQuotaWindow(headers, "secondary", "secondary"); ok {
+		details.Windows = append(details.Windows, window)
+		hasDetails = true
+		if window.UsedPercent != nil && *window.UsedPercent >= 100 {
+			available = false
+		}
+	}
+	if v := firstHeaderFloat(headers, "x-codex-primary-over-secondary-limit-percent"); v != nil {
+		details.PrimaryOverSecondaryLimitPercent = v
+		hasDetails = true
+	}
+	if v := firstHeader(headers, "Retry-After"); v != "" {
+		if parseRetryAfterIntoDetails(&details, v) {
+			hasDetails = true
+			available = false
+		}
+	}
+	if !hasDetails {
+		return
+	}
+	details.Source = "codex_headers"
+	details.Available = &available
+	entry.QuotaDetails = details
+}
+
+func codexQuotaWindow(headers map[string][]string, prefix, name string) (quotaWindow, bool) {
+	usedHeader := "x-codex-" + prefix + "-used-percent"
+	resetHeader := "x-codex-" + prefix + "-reset-after-seconds"
+	windowHeader := "x-codex-" + prefix + "-window-minutes"
+	if !hasAnyHeader(headers, usedHeader, resetHeader, windowHeader) {
+		return quotaWindow{}, false
+	}
+	windowMinutes := firstHeaderInt(headers, windowHeader)
+	window := quotaWindow{
+		Name:              name,
+		Label:             codexWindowLabel(name, windowMinutes),
+		UsedPercent:       firstHeaderFloat(headers, usedHeader),
+		ResetAfterSeconds: firstHeaderInt(headers, resetHeader),
+		WindowMinutes:     windowMinutes,
+	}
+	return window, true
+}
+
+func codexWindowLabel(name string, minutes *int64) string {
+	if minutes == nil {
+		return name + " window"
+	}
+	switch *minutes {
+	case 300:
+		return name + " window (5h)"
+	case 10080:
+		return name + " window (7d)"
+	default:
+		return fmt.Sprintf("%s window (%dm)", name, *minutes)
+	}
 }
 
 func parseFailureBodyLocked(entry *credentialEntry, provider string, failure usageFailure) {
 	switch provider {
 	case "codex":
 		parseCodex429(entry, failure.Body)
+	case "antigravity", "gemini-cli":
+		parseAntigravity429(entry, failure.Body)
 	}
 }
 
@@ -485,15 +680,17 @@ func parseCodex429(entry *credentialEntry, body string) {
 	}
 	var parsed struct {
 		Error struct {
-			Type            string `json:"type"`
-			ResetsAt        string `json:"resets_at"`
-			ResetsInSeconds int64  `json:"resets_in_seconds"`
+			Type            string          `json:"type"`
+			Message         string          `json:"message"`
+			ResetsAt        json.RawMessage `json:"resets_at"`
+			ResetsInSeconds json.RawMessage `json:"resets_in_seconds"`
+			PlanType        string          `json:"plan_type"`
 		} `json:"error"`
 	}
 	if err := json.Unmarshal([]byte(body), &parsed); err != nil {
 		return
 	}
-	if parsed.Error.Type != "usage_limit_reached" {
+	if parsed.Error.Type != "usage_limit_reached" && parsed.Error.Type != "rate_limit_exceeded" {
 		return
 	}
 	available := false
@@ -501,19 +698,164 @@ func parseCodex429(entry *credentialEntry, body string) {
 	details.Available = &available
 	details.Source = "failure_body"
 	details.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
-	if parsed.Error.ResetsAt != "" {
-		details.ResetsAt = parsed.Error.ResetsAt
+	details.ErrorType = parsed.Error.Type
+	details.PlanType = parsed.Error.PlanType
+	if parsed.Error.Message != "" {
+		details.Detail = parsed.Error.Message
 	}
-	if parsed.Error.ResetsInSeconds > 0 {
-		details.ResetsInSeconds = int64Ptr(parsed.Error.ResetsInSeconds)
+	if resetAt := parseResetAt(parsed.Error.ResetsAt); resetAt != "" {
+		details.ResetsAt = resetAt
+	}
+	if secs := parseRawInt64(parsed.Error.ResetsInSeconds); secs != nil && *secs > 0 {
+		details.ResetsInSeconds = secs
+		if details.ResetsAt == "" {
+			details.ResetsAt = time.Now().UTC().Add(time.Duration(*secs) * time.Second).Format(time.RFC3339)
+		}
 	}
 	entry.QuotaDetails = details
 	// Also update quota state
 	entry.QuotaState.Exceeded = true
-	entry.QuotaState.Reason = "usage_limit_reached"
-	if parsed.Error.ResetsAt != "" {
-		entry.QuotaState.NextRecoverAt = &parsed.Error.ResetsAt
+	entry.QuotaState.Reason = parsed.Error.Type
+	if details.ResetsAt != "" {
+		entry.QuotaState.NextRecoverAt = &details.ResetsAt
 	}
+}
+
+func parseAntigravity429(entry *credentialEntry, body string) {
+	if body == "" {
+		return
+	}
+	var parsed struct {
+		Error struct {
+			Status  string `json:"status"`
+			Message string `json:"message"`
+			Details []struct {
+				Type       string            `json:"@type"`
+				Reason     string            `json:"reason"`
+				Metadata   map[string]string `json:"metadata"`
+				RetryDelay string            `json:"retryDelay"`
+			} `json:"details"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(body), &parsed); err != nil {
+		return
+	}
+
+	errorReason := ""
+	model := ""
+	retryDelay := ""
+	for _, detail := range parsed.Error.Details {
+		if errorReason == "" && detail.Reason != "" {
+			errorReason = detail.Reason
+		}
+		if model == "" && detail.Metadata != nil {
+			model = detail.Metadata["model"]
+		}
+		if retryDelay == "" && detail.RetryDelay != "" {
+			retryDelay = detail.RetryDelay
+		}
+	}
+	if parsed.Error.Status == "" && errorReason == "" && retryDelay == "" {
+		return
+	}
+
+	available := false
+	details := entry.QuotaDetails
+	details.Available = &available
+	details.Source = "failure_body"
+	details.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+	details.ErrorStatus = parsed.Error.Status
+	details.ErrorReason = errorReason
+	details.Model = model
+	details.RetryDelay = retryDelay
+	if parsed.Error.Message != "" {
+		details.Detail = parsed.Error.Message
+	}
+	if secs := parseRetryDelaySeconds(retryDelay); secs != nil {
+		details.ResetsInSeconds = secs
+		details.ResetsAt = time.Now().UTC().Add(time.Duration(*secs) * time.Second).Format(time.RFC3339)
+	}
+	entry.QuotaDetails = details
+
+	entry.QuotaState.Exceeded = true
+	if errorReason != "" {
+		entry.QuotaState.Reason = strings.ToLower(errorReason)
+	} else if parsed.Error.Status != "" {
+		entry.QuotaState.Reason = strings.ToLower(parsed.Error.Status)
+	}
+	if details.ResetsAt != "" {
+		entry.QuotaState.NextRecoverAt = &details.ResetsAt
+	}
+}
+
+func parseResetAt(raw json.RawMessage) string {
+	value := strings.TrimSpace(string(raw))
+	if value == "" || value == "null" {
+		return ""
+	}
+	var asString string
+	if err := json.Unmarshal(raw, &asString); err == nil {
+		asString = strings.TrimSpace(asString)
+		if asString == "" {
+			return ""
+		}
+		if formatted := parseResetAtString(asString); formatted != "" {
+			return formatted
+		}
+		return ""
+	}
+	if n, err := strconv.ParseFloat(value, 64); err == nil {
+		return time.Unix(int64(n), 0).UTC().Format(time.RFC3339)
+	}
+	return ""
+}
+
+func parseResetAtString(value string) string {
+	if t, err := time.Parse(time.RFC3339, value); err == nil {
+		return t.UTC().Format(time.RFC3339)
+	}
+	if t, err := time.Parse(time.RFC3339Nano, value); err == nil {
+		return t.UTC().Format(time.RFC3339)
+	}
+	if n, err := strconv.ParseFloat(value, 64); err == nil {
+		return time.Unix(int64(n), 0).UTC().Format(time.RFC3339)
+	}
+	return ""
+}
+
+func parseRawInt64(raw json.RawMessage) *int64 {
+	value := strings.TrimSpace(string(raw))
+	if value == "" || value == "null" {
+		return nil
+	}
+	var asString string
+	if err := json.Unmarshal(raw, &asString); err == nil {
+		value = strings.TrimSpace(asString)
+	}
+	if value == "" {
+		return nil
+	}
+	n, err := strconv.ParseInt(value, 10, 64)
+	if err != nil {
+		return nil
+	}
+	return int64Ptr(n)
+}
+
+func parseRetryDelaySeconds(value string) *int64 {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+	d, err := time.ParseDuration(value)
+	if err != nil {
+		return nil
+	}
+	secs := int64(d / time.Second)
+	if secs == 0 && d > 0 {
+		secs = 1
+	}
+	return int64Ptr(secs)
 }
 
 func firstHeader(headers map[string][]string, key string) string {
@@ -819,13 +1161,20 @@ func activePollLoop() {
 	}
 }
 
-func queryAntigravityCredits() {
+func queryProviderQuotaDetails() {
 	entries := store.all()
 	for _, entry := range entries {
-		if entry.Provider == "antigravity" || entry.Provider == "gemini-cli" {
+		switch entry.Provider {
+		case "antigravity", "gemini-cli":
 			queryLoadCodeAssist(entry.AuthIndex)
+		case "claude":
+			queryClaudeUsage(entry.AuthIndex)
 		}
 	}
+}
+
+func queryAntigravityCredits() {
+	queryProviderQuotaDetails()
 }
 
 type apiCallResponse struct {
@@ -833,14 +1182,232 @@ type apiCallResponse struct {
 	Body       string `json:"body"`
 }
 
+type claudeUsageResponse struct {
+	FiveHour struct {
+		Utilization float64 `json:"utilization"`
+		ResetsAt    string  `json:"resets_at"`
+	} `json:"five_hour"`
+	SevenDay struct {
+		Utilization float64 `json:"utilization"`
+		ResetsAt    string  `json:"resets_at"`
+	} `json:"seven_day"`
+	SevenDaySonnet struct {
+		Utilization float64 `json:"utilization"`
+		ResetsAt    string  `json:"resets_at"`
+	} `json:"seven_day_sonnet"`
+}
+
 type loadCodeAssistResponse struct {
-	PaidTier struct {
-		ID               string `json:"id"`
-		AvailableCredits []struct {
-			CreditAmount        float64 `json:"creditAmount"`
-			MinimumCreditAmount float64 `json:"minimumCreditAmountForUsage"`
-		} `json:"availableCredits"`
+	CloudAICompanionProject string   `json:"cloudaicompanionProject"`
+	CurrentTier             tierInfo `json:"currentTier"`
+	PaidTier                struct {
+		ID               string                 `json:"id"`
+		Name             string                 `json:"name"`
+		Description      string                 `json:"description"`
+		AvailableCredits []loadCodeAssistCredit `json:"availableCredits"`
 	} `json:"paidTier"`
+	IneligibleTiers []struct {
+		Tier          tierInfo `json:"tier"`
+		ReasonCode    string   `json:"reasonCode"`
+		ReasonMessage string   `json:"reasonMessage"`
+	} `json:"ineligibleTiers"`
+	AllowedTiers []struct {
+		ID        string `json:"id"`
+		Name      string `json:"name"`
+		IsDefault *bool  `json:"isDefault"`
+	} `json:"allowedTiers"`
+}
+
+type loadCodeAssistCredit struct {
+	CreditType          string        `json:"creditType"`
+	CreditAmount        flexibleFloat `json:"creditAmount"`
+	MinimumCreditAmount flexibleFloat `json:"minimumCreditAmountForUsage"`
+}
+
+type tierInfo struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+}
+
+func queryClaudeUsage(authIndex string) {
+	if cfg.CPABaseURL == "" || cfg.ManagementKey == "" {
+		return
+	}
+
+	apiCallPayload, _ := json.Marshal(map[string]any{
+		"auth_index": authIndex,
+		"method":     "GET",
+		"url":        "https://api.anthropic.com/api/oauth/usage",
+		"header": map[string]string{
+			"Accept":         "application/json, text/plain, */*",
+			"Authorization":  "Bearer $TOKEN$",
+			"Content-Type":   "application/json",
+			"anthropic-beta": "oauth-2025-04-20",
+			"User-Agent":     "claude-code/2.1.7",
+		},
+	})
+	bodyStr, ok := queryManagementAPICall(authIndex, apiCallPayload)
+	if !ok {
+		return
+	}
+
+	var usageResp claudeUsageResponse
+	if err := json.Unmarshal([]byte(bodyStr), &usageResp); err != nil {
+		return
+	}
+	updateClaudeUsageQuota(authIndex, &usageResp)
+}
+
+func queryManagementAPICall(authIndex string, apiCallPayload []byte) (string, bool) {
+	// Build the host.http.do request
+	// Host expects: method, url, headers (plural, map[string][]string), body ([]byte = base64 in JSON)
+	targetURL := cfg.CPABaseURL + "/v0/management/api-call"
+	hostPayload, _ := json.Marshal(map[string]any{
+		"method": "POST",
+		"url":    targetURL,
+		"headers": map[string][]string{
+			"Authorization": {"Bearer " + cfg.ManagementKey},
+			"Content-Type":  {"application/json"},
+		},
+		"body": []byte(apiCallPayload),
+	})
+	resp, err := callHostWithResponse("host.http.do", hostPayload)
+	if err != nil {
+		callHostLog("error", fmt.Sprintf("credential-usage: host.http.do failed for %s: %v", authIndex, err))
+		return "", false
+	}
+
+	// Unwrap envelope
+	var env envelope
+	if err := json.Unmarshal(resp, &env); err != nil || !env.OK {
+		callHostLog("error", fmt.Sprintf("credential-usage: host.http.do envelope error for %s: %v", authIndex, err))
+		return "", false
+	}
+
+	// Unwrap HTTP response
+	var httpResp struct {
+		StatusCode int                 `json:"StatusCode"`
+		Headers    map[string][]string `json:"Headers"`
+		Body       string              `json:"Body"`
+	}
+	if err := json.Unmarshal(env.Result, &httpResp); err != nil {
+		callHostLog("error", fmt.Sprintf("credential-usage: host.http.do parse error for %s: %v", authIndex, err))
+		return "", false
+	}
+
+	if httpResp.StatusCode != 200 {
+		return "", false
+	}
+
+	// Decode base64 body if present
+	var bodyStr string
+	if httpResp.Body != "" {
+		decoded, err := base64.StdEncoding.DecodeString(httpResp.Body)
+		if err != nil {
+			// Body might not be base64
+			bodyStr = httpResp.Body
+		} else {
+			bodyStr = string(decoded)
+		}
+	}
+
+	// Parse apiCallResponse
+	var apiResp apiCallResponse
+	if err := json.Unmarshal([]byte(bodyStr), &apiResp); err != nil {
+		return bodyStr, true
+	}
+	if apiResp.StatusCode != 200 {
+		return "", false
+	}
+	return apiResp.Body, true
+}
+
+func updateClaudeUsageQuota(authIndex string, resp *claudeUsageResponse) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+
+	entry := store.data[authIndex]
+	if entry == nil {
+		return
+	}
+
+	details := entry.QuotaDetails
+	details.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+	if details.Source == "" {
+		details.Source = "anthropic_usage_api"
+	}
+	details.Windows = upsertQuotaWindow(details.Windows, quotaWindow{
+		Name:        "5h",
+		Label:       "5 hour limit",
+		Utilization: float64Ptr(resp.FiveHour.Utilization),
+		ResetAt:     resp.FiveHour.ResetsAt,
+	})
+	if resp.SevenDay.ResetsAt != "" || resp.SevenDay.Utilization != 0 {
+		details.Windows = upsertQuotaWindow(details.Windows, quotaWindow{
+			Name:        "7d",
+			Label:       "weekly limit",
+			Utilization: float64Ptr(resp.SevenDay.Utilization),
+			ResetAt:     resp.SevenDay.ResetsAt,
+		})
+	}
+	if resp.SevenDaySonnet.ResetsAt != "" || resp.SevenDaySonnet.Utilization != 0 {
+		details.Windows = upsertQuotaWindow(details.Windows, quotaWindow{
+			Name:        "7d_sonnet",
+			Label:       "weekly Sonnet limit",
+			Utilization: float64Ptr(resp.SevenDaySonnet.Utilization),
+			ResetAt:     resp.SevenDaySonnet.ResetsAt,
+		})
+	}
+	entry.QuotaDetails = details
+}
+
+func upsertQuotaWindow(windows []quotaWindow, window quotaWindow) []quotaWindow {
+	for i := range windows {
+		if windows[i].Name == window.Name {
+			windows[i] = mergeQuotaWindow(windows[i], window)
+			return windows
+		}
+	}
+	return append(windows, window)
+}
+
+func quotaWindowByName(windows []quotaWindow, name string) *quotaWindow {
+	for i := range windows {
+		if windows[i].Name == name {
+			return &windows[i]
+		}
+	}
+	return nil
+}
+
+func mergeQuotaWindow(existing, update quotaWindow) quotaWindow {
+	merged := existing
+	if update.Label != "" {
+		merged.Label = update.Label
+	}
+	if update.Status != "" {
+		merged.Status = update.Status
+	}
+	if update.Utilization != nil {
+		merged.Utilization = update.Utilization
+	}
+	if update.UsedPercent != nil {
+		merged.UsedPercent = update.UsedPercent
+	}
+	if update.SurpassedThreshold != nil {
+		merged.SurpassedThreshold = update.SurpassedThreshold
+	}
+	if update.ResetAt != "" {
+		merged.ResetAt = update.ResetAt
+	}
+	if update.ResetAfterSeconds != nil {
+		merged.ResetAfterSeconds = update.ResetAfterSeconds
+	}
+	if update.WindowMinutes != nil {
+		merged.WindowMinutes = update.WindowMinutes
+	}
+	return merged
 }
 
 func queryLoadCodeAssist(authIndex string) {
@@ -918,6 +1485,7 @@ func queryLoadCodeAssist(authIndex string) {
 		// Try parsing bodyStr directly as loadCodeAssistResponse
 		var assistResp loadCodeAssistResponse
 		if err := json.Unmarshal([]byte(bodyStr), &assistResp); err != nil {
+			applyAntigravityFailureBody(authIndex, bodyStr)
 			return
 		}
 		updateAntigravityQuota(authIndex, &assistResp)
@@ -925,25 +1493,34 @@ func queryLoadCodeAssist(authIndex string) {
 	}
 
 	if apiResp.StatusCode != 200 {
+		applyAntigravityFailureBody(authIndex, apiResp.Body)
 		return
 	}
 
 	// Parse the inner body as loadCodeAssistResponse
 	var assistResp loadCodeAssistResponse
 	if err := json.Unmarshal([]byte(apiResp.Body), &assistResp); err != nil {
+		applyAntigravityFailureBody(authIndex, apiResp.Body)
 		return
 	}
 
 	updateAntigravityQuota(authIndex, &assistResp)
 }
 
-func updateAntigravityQuota(authIndex string, resp *loadCodeAssistResponse) {
-	if len(resp.PaidTier.AvailableCredits) == 0 {
+func applyAntigravityFailureBody(authIndex, body string) {
+	if body == "" {
 		return
 	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	entry := store.data[authIndex]
+	if entry == nil {
+		return
+	}
+	parseAntigravity429(entry, body)
+}
 
-	credit := resp.PaidTier.AvailableCredits[0]
-
+func updateAntigravityQuota(authIndex string, resp *loadCodeAssistResponse) {
 	store.mu.Lock()
 	defer store.mu.Unlock()
 
@@ -952,25 +1529,73 @@ func updateAntigravityQuota(authIndex string, resp *loadCodeAssistResponse) {
 		return
 	}
 
-	available := credit.CreditAmount > credit.MinimumCreditAmount
+	selected := selectAntigravityCredit(resp.PaidTier.AvailableCredits)
 	details := entry.QuotaDetails
 	details.Source = "upstream_api"
 	details.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
-	details.Available = &available
-	details.Credits = &creditDetails{
-		Amount:          float64Ptr(credit.CreditAmount),
-		MinimumForUsage: float64Ptr(credit.MinimumCreditAmount),
-		PaidTierID:      resp.PaidTier.ID,
-	}
-	details.Detail = fmt.Sprintf("Credits: %.2f / min: %.2f", credit.CreditAmount, credit.MinimumCreditAmount)
-	entry.QuotaDetails = details
+	details.Credits = buildCreditDetails(resp, selected)
 
-	if credit.CreditAmount <= credit.MinimumCreditAmount {
-		entry.QuotaState.Exceeded = true
-		entry.QuotaState.Reason = "insufficient_credits"
-	} else {
-		entry.QuotaState.Exceeded = false
-		entry.QuotaState.Reason = ""
-		entry.QuotaState.NextRecoverAt = nil
+	if selected != nil {
+		available := selected.CreditAmount > selected.MinimumCreditAmount
+		details.Available = &available
+		details.Detail = fmt.Sprintf("Credits: %.2f / min: %.2f", selected.CreditAmount, selected.MinimumCreditAmount)
+		if selected.CreditAmount <= selected.MinimumCreditAmount {
+			entry.QuotaState.Exceeded = true
+			entry.QuotaState.Reason = "insufficient_credits"
+		} else {
+			entry.QuotaState.Exceeded = false
+			entry.QuotaState.Reason = ""
+			entry.QuotaState.NextRecoverAt = nil
+		}
 	}
+	entry.QuotaDetails = details
+}
+
+func selectAntigravityCredit(credits []loadCodeAssistCredit) *loadCodeAssistCredit {
+	if len(credits) == 0 {
+		return nil
+	}
+	for i := range credits {
+		if strings.EqualFold(credits[i].CreditType, "GOOGLE_ONE_AI") {
+			return &credits[i]
+		}
+	}
+	return &credits[0]
+}
+
+func buildCreditDetails(resp *loadCodeAssistResponse, selected *loadCodeAssistCredit) *creditDetails {
+	credits := &creditDetails{
+		PaidTierID:              resp.PaidTier.ID,
+		PaidTierName:            resp.PaidTier.Name,
+		CurrentTierID:           resp.CurrentTier.ID,
+		CurrentTierName:         resp.CurrentTier.Name,
+		CloudAICompanionProject: resp.CloudAICompanionProject,
+	}
+	if selected != nil {
+		credits.Amount = float64Ptr(float64(selected.CreditAmount))
+		credits.MinimumForUsage = float64Ptr(float64(selected.MinimumCreditAmount))
+	}
+	for _, credit := range resp.PaidTier.AvailableCredits {
+		credits.Items = append(credits.Items, creditItem{
+			CreditType:      credit.CreditType,
+			Amount:          float64Ptr(float64(credit.CreditAmount)),
+			MinimumForUsage: float64Ptr(float64(credit.MinimumCreditAmount)),
+		})
+	}
+	for _, tier := range resp.IneligibleTiers {
+		credits.IneligibleTiers = append(credits.IneligibleTiers, tierProblem{
+			TierID:        tier.Tier.ID,
+			TierName:      tier.Tier.Name,
+			ReasonCode:    tier.ReasonCode,
+			ReasonMessage: tier.ReasonMessage,
+		})
+	}
+	for _, tier := range resp.AllowedTiers {
+		credits.AllowedTiers = append(credits.AllowedTiers, allowedTier{
+			ID:        tier.ID,
+			Name:      tier.Name,
+			IsDefault: tier.IsDefault,
+		})
+	}
+	return credits
 }

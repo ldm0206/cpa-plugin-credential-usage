@@ -4,8 +4,9 @@ A CPA plugin that exposes credential quota details through CPA plugin resource r
 
 ## Capabilities
 
-- **UsagePlugin**: Collects quota details from every API request response header and failure body
+- **UsagePlugin**: Collects provider-native quota details from API response headers and failure bodies
 - **ManagementAPI**: Serves credential quota data via HTTP endpoints
+- **Active polling**: Optionally queries provider usage APIs through CPA's Management API `api-call` endpoint
 
 ## Resource Endpoints
 
@@ -27,7 +28,13 @@ curl http://127.0.0.1:8317/v0/resource/plugins/credential-usage/list
 curl http://127.0.0.1:8317/v0/resource/plugins/credential-usage/detail?auth_index=2
 ```
 
-Example response item:
+## Response Shape
+
+`quota_state` mirrors CPA runtime cooldown state. It answers whether CPA has temporarily marked a credential unavailable and why. Package/window quota data lives in `quota_details`.
+
+`usage_summary` and top-level `quota_remaining` are not returned. The plugin surfaces provider-observed quota data and does not fabricate absolute limits when providers only expose utilization, percent, or reset times.
+
+### Claude example
 
 ```json
 {
@@ -35,7 +42,6 @@ Example response item:
   "auth_index": "1",
   "provider": "claude",
   "label": "Claude Pro",
-  "email": "user@example.com",
   "status": "available",
   "quota_state": {
     "exceeded": false
@@ -56,6 +62,7 @@ Example response item:
       {
         "name": "7d",
         "label": "weekly limit",
+        "status": "allowed_warning",
         "utilization": 0.77,
         "surpassed_threshold": true,
         "reset_at": "2026-06-24T00:00:00Z"
@@ -75,6 +82,11 @@ Example response item:
       "output_tokens": {
         "limit": 50000,
         "remaining": 45000
+      },
+      "tokens": {
+        "limit": 200000,
+        "remaining": 150000,
+        "reset_at": "2026-06-20T10:10:00Z"
       }
     }
   },
@@ -82,9 +94,140 @@ Example response item:
 }
 ```
 
-`quota_state` mirrors CPA runtime cooldown state. It answers whether CPA has temporarily marked a credential unavailable and why. Package/window quota data lives in `quota_details`.
+### Codex example
 
-`quota_details.windows` is populated from provider response headers observed in CPA usage events. For Anthropic, the plugin reads `anthropic-ratelimit-unified-5h-*` and `anthropic-ratelimit-unified-7d-*` headers. These headers expose utilization, reset time, status, and threshold state; they do not necessarily expose absolute package limit numbers.
+```json
+{
+  "provider": "codex",
+  "quota_details": {
+    "source": "codex_headers",
+    "available": true,
+    "windows": [
+      {
+        "name": "primary",
+        "label": "primary window (7d)",
+        "used_percent": 81.5,
+        "reset_after_seconds": 86400,
+        "window_minutes": 10080
+      },
+      {
+        "name": "secondary",
+        "label": "secondary window (5h)",
+        "used_percent": 33,
+        "reset_after_seconds": 1200,
+        "window_minutes": 300
+      }
+    ],
+    "primary_over_secondary_limit_percent": 245
+  }
+}
+```
+
+Codex 429 failure bodies can additionally populate `error_type`, `plan_type`, `detail`, `resets_at`, and `resets_in_seconds`.
+
+### Antigravity / Gemini CLI example
+
+```json
+{
+  "provider": "antigravity",
+  "quota_details": {
+    "source": "upstream_api",
+    "available": false,
+    "credits": {
+      "amount": 12,
+      "minimum_for_usage": 20,
+      "paid_tier_id": "g1-pro-tier",
+      "paid_tier_name": "Google AI Pro",
+      "current_tier_id": "free-tier",
+      "current_tier_name": "Free",
+      "cloudaicompanion_project": "project-123",
+      "items": [
+        {
+          "credit_type": "OTHER",
+          "amount": 999,
+          "minimum_for_usage": 1
+        },
+        {
+          "credit_type": "GOOGLE_ONE_AI",
+          "amount": 12,
+          "minimum_for_usage": 20
+        }
+      ],
+      "ineligible_tiers": [
+        {
+          "tier_id": "ultra-tier",
+          "tier_name": "Ultra",
+          "reason_code": "INELIGIBLE_ACCOUNT",
+          "reason_message": "Not eligible"
+        }
+      ],
+      "allowed_tiers": [
+        {
+          "id": "free-tier",
+          "name": "Free",
+          "is_default": true
+        }
+      ]
+    }
+  }
+}
+```
+
+Antigravity/Gemini CLI Google RPC quota failures can additionally populate `error_status`, `error_reason`, `model`, `retry_delay`, `detail`, `resets_at`, and `resets_in_seconds`.
+
+## Provider Fields Collected
+
+### Passive Mode (default)
+
+Always active. Collects data from:
+
+- Claude/Anthropic response headers:
+  - `anthropic-ratelimit-unified-5h-*`
+  - `anthropic-ratelimit-unified-7d-*`
+  - `anthropic-ratelimit-unified-reset`
+  - `anthropic-ratelimit-requests-*`
+  - `anthropic-ratelimit-input-tokens-*`
+  - `anthropic-ratelimit-output-tokens-*`
+  - generic fallback `x-ratelimit-*-requests`, `x-ratelimit-*-tokens`, and `Retry-After`
+- Codex response headers:
+  - `x-codex-primary-used-percent`
+  - `x-codex-primary-reset-after-seconds`
+  - `x-codex-primary-window-minutes`
+  - `x-codex-secondary-used-percent`
+  - `x-codex-secondary-reset-after-seconds`
+  - `x-codex-secondary-window-minutes`
+  - `x-codex-primary-over-secondary-limit-percent`
+- Codex failure bodies:
+  - `error.type`
+  - `error.message`
+  - `error.resets_at`
+  - `error.resets_in_seconds`
+  - `error.plan_type`
+- Antigravity/Gemini CLI Google RPC failure bodies:
+  - `error.status`
+  - `error.message`
+  - `error.details[].reason`
+  - `error.details[].metadata.model`
+  - `error.details[].retryDelay`
+- `host.auth.get_runtime` credential status fields for `quota_state`
+
+### Active Mode (when `cpa-base-url` + `management-key` are configured)
+
+Periodically queries upstream APIs through CPA's `api-call` endpoint:
+
+- Claude OAuth usage API (`https://api.anthropic.com/api/oauth/usage`):
+  - `five_hour.utilization`, `five_hour.resets_at`
+  - `seven_day.utilization`, `seven_day.resets_at`
+  - `seven_day_sonnet.utilization`, `seven_day_sonnet.resets_at`
+- Antigravity/Gemini CLI `loadCodeAssist`:
+  - `cloudaicompanionProject`
+  - `currentTier.id/name/description`
+  - `paidTier.id/name/description`
+  - all `paidTier.availableCredits[]` entries including `creditType`, `creditAmount`, and `minimumCreditAmountForUsage`
+  - `ineligibleTiers[]` reason fields
+  - `allowedTiers[]`
+
+For Antigravity credits, the legacy `credits.amount` and `credits.minimum_for_usage` fields are selected from `creditType == "GOOGLE_ONE_AI"` when present, otherwise from the first available credit.
 
 ## Configuration
 
@@ -97,18 +240,6 @@ plugins:
       management-key: ""      # Optional: Management API key for active queries
       poll-interval: "5m"     # Optional: Active query interval (default 5m)
 ```
-
-### Passive Mode (default)
-
-Always active. Collects data from:
-- UsageRecord response headers (Claude unified 5-hour/weekly quota windows, Claude rate limits, Retry-After)
-- UsageRecord failure bodies (Codex 429 usage_limit_reached)
-- host.auth.get_runtime (credential status, quota state)
-
-### Active Mode (when cpa-base-url + management-key configured)
-
-Periodically queries upstream APIs through CPA's api-call endpoint:
-- Antigravity/Gemini CLI: loadCodeAssist credit balance, exposed as `quota_details.credits`
 
 ## Build
 

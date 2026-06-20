@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"testing"
+	"time"
 )
 
 type testEnvelope struct {
@@ -373,6 +374,125 @@ func TestParseClaudeHeadersMalformedUnifiedHeaders(t *testing.T) {
 	}
 }
 
+func TestParseClaudeHeadersGenericRateLimitFallbacks(t *testing.T) {
+	entry := &credentialEntry{}
+	parseClaudeHeaders(entry, map[string][]string{
+		"x-ratelimit-limit-requests":     {"100"},
+		"x-ratelimit-remaining-requests": {"25"},
+		"x-ratelimit-reset-requests":     {"2026-06-20T10:05:00Z"},
+		"x-ratelimit-limit-tokens":       {"100000"},
+		"x-ratelimit-remaining-tokens":   {"50000"},
+		"x-ratelimit-reset-tokens":       {"2026-06-20T10:10:00Z"},
+	})
+
+	limits := entry.QuotaDetails.RateLimits
+	if limits == nil || limits.Requests == nil || limits.Tokens == nil {
+		t.Fatalf("rate limits = %+v, want requests and generic token buckets", limits)
+	}
+	if entry.QuotaDetails.Source != "response_headers" {
+		t.Fatalf("source = %q, want response_headers", entry.QuotaDetails.Source)
+	}
+	if *limits.Requests.Limit != 100 || *limits.Requests.Remaining != 25 || limits.Requests.ResetAt != "2026-06-20T10:05:00Z" {
+		t.Fatalf("requests bucket = %+v, want 100/25/reset", limits.Requests)
+	}
+	if *limits.Tokens.Limit != 100000 || *limits.Tokens.Remaining != 50000 || limits.Tokens.ResetAt != "2026-06-20T10:10:00Z" {
+		t.Fatalf("tokens bucket = %+v, want 100000/50000/reset", limits.Tokens)
+	}
+}
+
+func TestParseClaudeHeadersRetryAfterFallback(t *testing.T) {
+	entry := &credentialEntry{}
+	parseClaudeHeaders(entry, map[string][]string{"Retry-After": {"120"}})
+
+	if entry.QuotaDetails.Source != "response_headers" {
+		t.Fatalf("source = %q, want response_headers", entry.QuotaDetails.Source)
+	}
+	if entry.QuotaDetails.Available == nil || *entry.QuotaDetails.Available {
+		t.Fatalf("available = %v, want false", entry.QuotaDetails.Available)
+	}
+	if entry.QuotaDetails.ResetsInSeconds == nil || *entry.QuotaDetails.ResetsInSeconds != 120 {
+		t.Fatalf("resets_in_seconds = %v, want 120", entry.QuotaDetails.ResetsInSeconds)
+	}
+	if entry.QuotaDetails.ResetsAt == "" {
+		t.Fatalf("resets_at should be populated")
+	}
+	if entry.QuotaDetails.Detail != "Retry-After: 120s" {
+		t.Fatalf("detail = %q, want Retry-After: 120s", entry.QuotaDetails.Detail)
+	}
+}
+
+func TestParseCodexHeadersStoresPrimarySecondaryWindows(t *testing.T) {
+	entry := &credentialEntry{}
+	parseCodexHeaders(entry, map[string][]string{
+		"x-codex-primary-used-percent":                 {"81.5"},
+		"x-codex-primary-reset-after-seconds":          {"86400"},
+		"x-codex-primary-window-minutes":               {"10080"},
+		"x-codex-secondary-used-percent":               {"33"},
+		"x-codex-secondary-reset-after-seconds":        {"1200"},
+		"x-codex-secondary-window-minutes":             {"300"},
+		"x-codex-primary-over-secondary-limit-percent": {"245"},
+	})
+
+	if entry.QuotaDetails.Source != "codex_headers" {
+		t.Fatalf("source = %q, want codex_headers", entry.QuotaDetails.Source)
+	}
+	if len(entry.QuotaDetails.Windows) != 2 {
+		t.Fatalf("windows = %+v, want primary and secondary", entry.QuotaDetails.Windows)
+	}
+	primary := findQuotaWindow(entry.QuotaDetails.Windows, "primary")
+	if primary == nil {
+		t.Fatalf("missing primary window: %+v", entry.QuotaDetails.Windows)
+	}
+	if primary.Label != "primary window (7d)" || primary.UsedPercent == nil || *primary.UsedPercent != 81.5 || primary.WindowMinutes == nil || *primary.WindowMinutes != 10080 || primary.ResetAfterSeconds == nil || *primary.ResetAfterSeconds != 86400 {
+		t.Fatalf("primary window = %+v, want 7d metadata", primary)
+	}
+	secondary := findQuotaWindow(entry.QuotaDetails.Windows, "secondary")
+	if secondary == nil {
+		t.Fatalf("missing secondary window: %+v", entry.QuotaDetails.Windows)
+	}
+	if secondary.Label != "secondary window (5h)" || secondary.UsedPercent == nil || *secondary.UsedPercent != 33 || secondary.WindowMinutes == nil || *secondary.WindowMinutes != 300 || secondary.ResetAfterSeconds == nil || *secondary.ResetAfterSeconds != 1200 {
+		t.Fatalf("secondary window = %+v, want 5h metadata", secondary)
+	}
+	if entry.QuotaDetails.PrimaryOverSecondaryLimitPercent == nil || *entry.QuotaDetails.PrimaryOverSecondaryLimitPercent != 245 {
+		t.Fatalf("primary_over_secondary_limit_percent = %v, want 245", entry.QuotaDetails.PrimaryOverSecondaryLimitPercent)
+	}
+}
+
+func TestParseCodex429NumericResetAndPlanType(t *testing.T) {
+	entry := &credentialEntry{}
+	parseCodex429(entry, `{"error":{"type":"usage_limit_reached","message":"Usage limit reached","resets_at":1782000000,"resets_in_seconds":3600,"plan_type":"pro"}}`)
+
+	expectedReset := time.Unix(1782000000, 0).UTC().Format(time.RFC3339)
+	if entry.QuotaDetails.ErrorType != "usage_limit_reached" {
+		t.Fatalf("error_type = %q, want usage_limit_reached", entry.QuotaDetails.ErrorType)
+	}
+	if entry.QuotaDetails.PlanType != "pro" {
+		t.Fatalf("plan_type = %q, want pro", entry.QuotaDetails.PlanType)
+	}
+	if entry.QuotaDetails.Detail != "Usage limit reached" {
+		t.Fatalf("detail = %q, want Usage limit reached", entry.QuotaDetails.Detail)
+	}
+	if entry.QuotaDetails.ResetsAt != expectedReset {
+		t.Fatalf("resets_at = %q, want %q", entry.QuotaDetails.ResetsAt, expectedReset)
+	}
+	if entry.QuotaDetails.ResetsInSeconds == nil || *entry.QuotaDetails.ResetsInSeconds != 3600 {
+		t.Fatalf("resets_in_seconds = %v, want 3600", entry.QuotaDetails.ResetsInSeconds)
+	}
+	if entry.QuotaState.NextRecoverAt == nil || *entry.QuotaState.NextRecoverAt != expectedReset {
+		t.Fatalf("next_recover_at = %v, want %q", entry.QuotaState.NextRecoverAt, expectedReset)
+	}
+}
+
+func TestParseCodex429NumericStringReset(t *testing.T) {
+	entry := &credentialEntry{}
+	parseCodex429(entry, `{"error":{"type":"usage_limit_reached","resets_at":"1782000000"}}`)
+
+	expectedReset := time.Unix(1782000000, 0).UTC().Format(time.RFC3339)
+	if entry.QuotaDetails.ResetsAt != expectedReset {
+		t.Fatalf("resets_at = %q, want %q", entry.QuotaDetails.ResetsAt, expectedReset)
+	}
+}
+
 func TestParseCodex429StoresQuotaDetails(t *testing.T) {
 	entry := &credentialEntry{}
 	parseCodex429(entry, `{"error":{"type":"usage_limit_reached","resets_at":"2026-06-21T00:00:00Z","resets_in_seconds":3600}}`)
@@ -402,10 +522,7 @@ func TestUpdateAntigravityQuotaStoresCreditsInQuotaDetails(t *testing.T) {
 
 	resp := &loadCodeAssistResponse{}
 	resp.PaidTier.ID = "paid-tier-id"
-	resp.PaidTier.AvailableCredits = append(resp.PaidTier.AvailableCredits, struct {
-		CreditAmount        float64 `json:"creditAmount"`
-		MinimumCreditAmount float64 `json:"minimumCreditAmountForUsage"`
-	}{CreditAmount: 123.45, MinimumCreditAmount: 1})
+	resp.PaidTier.AvailableCredits = append(resp.PaidTier.AvailableCredits, loadCodeAssistCredit{CreditAmount: 123.45, MinimumCreditAmount: 1})
 
 	updateAntigravityQuota("ag", resp)
 
@@ -425,6 +542,160 @@ func TestUpdateAntigravityQuotaStoresCreditsInQuotaDetails(t *testing.T) {
 	}
 	if credits.PaidTierID != "paid-tier-id" {
 		t.Fatalf("paid_tier_id = %q, want paid-tier-id", credits.PaidTierID)
+	}
+}
+
+func TestUpdateAntigravityQuotaSelectsGoogleOneCreditAndStoresAllCredits(t *testing.T) {
+	resetTestStore()
+	store.mu.Lock()
+	store.getOrCreate("ag-google", "antigravity", "auth-ag-google")
+	store.mu.Unlock()
+
+	resp := &loadCodeAssistResponse{}
+	resp.CloudAICompanionProject = "project-123"
+	resp.CurrentTier.ID = "free-tier"
+	resp.CurrentTier.Name = "Free"
+	resp.PaidTier.ID = "paid-tier-id"
+	resp.PaidTier.Name = "Google AI Pro"
+	resp.PaidTier.AvailableCredits = append(resp.PaidTier.AvailableCredits,
+		loadCodeAssistCredit{CreditType: "OTHER", CreditAmount: 999, MinimumCreditAmount: 1},
+		loadCodeAssistCredit{CreditType: "GOOGLE_ONE_AI", CreditAmount: 12, MinimumCreditAmount: 20},
+	)
+
+	updateAntigravityQuota("ag-google", resp)
+
+	entry := store.getByIndex("ag-google")
+	if entry == nil {
+		t.Fatalf("missing antigravity credential")
+	}
+	credits := entry.QuotaDetails.Credits
+	if credits == nil {
+		t.Fatalf("credits = nil, want credit details")
+	}
+	if credits.Amount == nil || *credits.Amount != 12 {
+		t.Fatalf("amount = %v, want selected GOOGLE_ONE_AI amount 12", credits.Amount)
+	}
+	if credits.MinimumForUsage == nil || *credits.MinimumForUsage != 20 {
+		t.Fatalf("minimum_for_usage = %v, want selected GOOGLE_ONE_AI minimum 20", credits.MinimumForUsage)
+	}
+	if entry.QuotaDetails.Available == nil || *entry.QuotaDetails.Available {
+		t.Fatalf("available = %v, want false", entry.QuotaDetails.Available)
+	}
+	if !entry.QuotaState.Exceeded || entry.QuotaState.Reason != "insufficient_credits" {
+		t.Fatalf("quota_state = %+v, want insufficient_credits", entry.QuotaState)
+	}
+	if len(credits.Items) != 2 {
+		t.Fatalf("items = %+v, want 2 credit items", credits.Items)
+	}
+	if credits.Items[0].CreditType != "OTHER" || credits.Items[1].CreditType != "GOOGLE_ONE_AI" {
+		t.Fatalf("items = %+v, want credit types preserved", credits.Items)
+	}
+	if credits.PaidTierName != "Google AI Pro" || credits.CurrentTierName != "Free" || credits.CloudAICompanionProject != "project-123" {
+		t.Fatalf("credits metadata = %+v, want tier/project metadata", credits)
+	}
+}
+
+func TestUpdateAntigravityQuotaStoresTierMetadataWithoutCredits(t *testing.T) {
+	resetTestStore()
+	store.mu.Lock()
+	store.getOrCreate("ag-tier", "antigravity", "auth-ag-tier")
+	store.mu.Unlock()
+
+	defaultTier := true
+	resp := &loadCodeAssistResponse{}
+	resp.CloudAICompanionProject = "project-456"
+	resp.CurrentTier.ID = "free-tier"
+	resp.CurrentTier.Name = "Free"
+	resp.PaidTier.ID = "pro-tier"
+	resp.PaidTier.Name = "Pro"
+	resp.IneligibleTiers = append(resp.IneligibleTiers, struct {
+		Tier          tierInfo `json:"tier"`
+		ReasonCode    string   `json:"reasonCode"`
+		ReasonMessage string   `json:"reasonMessage"`
+	}{Tier: tierInfo{ID: "ultra-tier", Name: "Ultra"}, ReasonCode: "INELIGIBLE_ACCOUNT", ReasonMessage: "Not eligible"})
+	resp.AllowedTiers = append(resp.AllowedTiers, struct {
+		ID        string `json:"id"`
+		Name      string `json:"name"`
+		IsDefault *bool  `json:"isDefault"`
+	}{ID: "free-tier", Name: "Free", IsDefault: &defaultTier})
+
+	updateAntigravityQuota("ag-tier", resp)
+
+	entry := store.getByIndex("ag-tier")
+	if entry == nil {
+		t.Fatalf("missing antigravity credential")
+	}
+	credits := entry.QuotaDetails.Credits
+	if credits == nil {
+		t.Fatalf("credits = nil, want metadata-only credit details")
+	}
+	if entry.QuotaDetails.Available != nil {
+		t.Fatalf("available = %v, want nil without credit balance", entry.QuotaDetails.Available)
+	}
+	if credits.PaidTierID != "pro-tier" || credits.PaidTierName != "Pro" || credits.CurrentTierID != "free-tier" || credits.CloudAICompanionProject != "project-456" {
+		t.Fatalf("credits metadata = %+v, want tier/project metadata", credits)
+	}
+	if len(credits.IneligibleTiers) != 1 || credits.IneligibleTiers[0].ReasonCode != "INELIGIBLE_ACCOUNT" {
+		t.Fatalf("ineligible_tiers = %+v, want reason", credits.IneligibleTiers)
+	}
+	if len(credits.AllowedTiers) != 1 || credits.AllowedTiers[0].IsDefault == nil || !*credits.AllowedTiers[0].IsDefault {
+		t.Fatalf("allowed_tiers = %+v, want default allowed tier", credits.AllowedTiers)
+	}
+}
+
+func TestParseAntigravity429StoresGoogleRPCQuotaDetails(t *testing.T) {
+	entry := &credentialEntry{}
+	parseAntigravity429(entry, `{"error":{"status":"RESOURCE_EXHAUSTED","message":"Quota exhausted","details":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"INSUFFICIENT_G1_CREDITS_BALANCE","metadata":{"model":"gemini-2.5-pro"}},{"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"3600s"}]}}`)
+
+	if entry.QuotaDetails.Source != "failure_body" {
+		t.Fatalf("source = %q, want failure_body", entry.QuotaDetails.Source)
+	}
+	if entry.QuotaDetails.Available == nil || *entry.QuotaDetails.Available {
+		t.Fatalf("available = %v, want false", entry.QuotaDetails.Available)
+	}
+	if entry.QuotaDetails.ErrorStatus != "RESOURCE_EXHAUSTED" || entry.QuotaDetails.ErrorReason != "INSUFFICIENT_G1_CREDITS_BALANCE" || entry.QuotaDetails.Model != "gemini-2.5-pro" || entry.QuotaDetails.RetryDelay != "3600s" {
+		t.Fatalf("quota_details = %+v, want Google RPC quota fields", entry.QuotaDetails)
+	}
+	if entry.QuotaDetails.ResetsInSeconds == nil || *entry.QuotaDetails.ResetsInSeconds != 3600 {
+		t.Fatalf("resets_in_seconds = %v, want 3600", entry.QuotaDetails.ResetsInSeconds)
+	}
+	if entry.QuotaDetails.ResetsAt == "" {
+		t.Fatalf("resets_at should be populated")
+	}
+	if !entry.QuotaState.Exceeded || entry.QuotaState.Reason != "insufficient_g1_credits_balance" {
+		t.Fatalf("quota_state = %+v, want insufficient_g1_credits_balance", entry.QuotaState)
+	}
+}
+
+func TestUpdateClaudeUsageQuotaStoresActiveUsageAPIWindows(t *testing.T) {
+	resetTestStore()
+	store.mu.Lock()
+	store.getOrCreate("claude-active", "claude", "auth-claude-active")
+	store.mu.Unlock()
+
+	resp := &claudeUsageResponse{}
+	resp.FiveHour.Utilization = 0.25
+	resp.FiveHour.ResetsAt = "2026-06-20T15:00:00Z"
+	resp.SevenDay.Utilization = 0.6
+	resp.SevenDay.ResetsAt = "2026-06-24T00:00:00Z"
+	resp.SevenDaySonnet.Utilization = 0.8
+	resp.SevenDaySonnet.ResetsAt = "2026-06-25T00:00:00Z"
+
+	updateClaudeUsageQuota("claude-active", resp)
+
+	entry := store.getByIndex("claude-active")
+	if entry == nil {
+		t.Fatalf("missing claude credential")
+	}
+	if entry.QuotaDetails.Source != "anthropic_usage_api" {
+		t.Fatalf("source = %q, want anthropic_usage_api", entry.QuotaDetails.Source)
+	}
+	if len(entry.QuotaDetails.Windows) != 3 {
+		t.Fatalf("windows = %+v, want 3 active usage windows", entry.QuotaDetails.Windows)
+	}
+	sonnet := findQuotaWindow(entry.QuotaDetails.Windows, "7d_sonnet")
+	if sonnet == nil || sonnet.Utilization == nil || *sonnet.Utilization != 0.8 || sonnet.ResetAt != "2026-06-25T00:00:00Z" {
+		t.Fatalf("7d_sonnet window = %+v, want utilization/reset", sonnet)
 	}
 }
 
