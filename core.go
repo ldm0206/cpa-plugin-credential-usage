@@ -1663,11 +1663,15 @@ func queryCodexQuota(authIndex string) {
 
 
 func updateClaudeUsageQuota(authIndex string, resp *claudeUsageResponse) {
+	if resp == nil {
+		return
+	}
+
 	store.mu.Lock()
 	defer store.mu.Unlock()
 
 	entry := store.data[authIndex]
-	if entry == nil || resp == nil {
+	if entry == nil {
 		return
 	}
 
