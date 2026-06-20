@@ -65,7 +65,11 @@ type quotaDetails struct {
 	OverallResetAt                   string                `json:"overall_reset_at,omitempty"`
 	RateLimits                       *rateLimitDetails     `json:"rate_limits,omitempty"`
 	Credits                          *creditDetails        `json:"credits,omitempty"`
-	ModelQuotas                      map[string]modelQuota `json:"model_quotas,omitempty"`
+	ModelQuotas                      map[string]modelQuota          `json:"model_quotas,omitempty"`
+	ExtraUsage                       *claudeExtraUsage              `json:"extra_usage,omitempty"`
+	QuotaGroups                      []quotaGroup                   `json:"quota_groups,omitempty"`
+	SubscriptionActiveUntil          string                         `json:"subscription_active_until,omitempty"`
+	RateLimitResetCreditsAvailableCount *int64                      `json:"rate_limit_reset_credits_available_count,omitempty"`
 	ResetsAt                         string                `json:"resets_at,omitempty"`
 	ResetsInSeconds                  *int64                `json:"resets_in_seconds,omitempty"`
 	PlanType                         string                `json:"plan_type,omitempty"`
@@ -101,6 +105,28 @@ type modelQuota struct {
 	MaxTokens          *int64          `json:"max_tokens,omitempty"`
 	MaxOutputTokens    *int64          `json:"max_output_tokens,omitempty"`
 	SupportedMimeTypes map[string]bool `json:"supported_mime_types,omitempty"`
+}
+
+type claudeExtraUsage struct {
+	IsEnabled    bool     `json:"is_enabled"`
+	MonthlyLimit float64  `json:"monthly_limit"`
+	UsedCredits  float64  `json:"used_credits"`
+	Utilization  *float64 `json:"utilization,omitempty"`
+}
+
+type quotaGroup struct {
+	ID          string        `json:"id,omitempty"`
+	Label       string        `json:"label,omitempty"`
+	Description string        `json:"description,omitempty"`
+	Buckets     []quotaBucket `json:"buckets,omitempty"`
+}
+
+type quotaBucket struct {
+	ID                string   `json:"id,omitempty"`
+	Label             string   `json:"label,omitempty"`
+	Description       string   `json:"description,omitempty"`
+	RemainingFraction *float64 `json:"remaining_fraction,omitempty"`
+	ResetTime         string   `json:"reset_time,omitempty"`
 }
 
 type rateLimitDetails struct {
@@ -183,6 +209,10 @@ type credentialEntry struct {
 	UsageSummary usageSummary `json:"-"`
 	QuotaDetails quotaDetails `json:"quota_details"`
 	LastActiveAt string       `json:"last_active_at,omitempty"`
+	CodexAccountID                 string `json:"-"`
+	CodexPlanTypeFallback          string `json:"-"`
+	CodexSubscriptionActiveUntil   string `json:"-"`
+	AntigravityProjectID           string `json:"-"`
 }
 
 type credentialStore struct {
@@ -259,11 +289,16 @@ func copyQuotaDetails(details quotaDetails) quotaDetails {
 	}
 	copyDetails.RateLimits = copyRateLimitDetails(details.RateLimits)
 	copyDetails.Credits = copyCreditDetails(details.Credits)
+	copyDetails.ExtraUsage = copyClaudeExtraUsage(details.ExtraUsage)
+	copyDetails.QuotaGroups = copyQuotaGroups(details.QuotaGroups)
 	if details.ResetsInSeconds != nil {
 		copyDetails.ResetsInSeconds = int64Ptr(*details.ResetsInSeconds)
 	}
 	if details.PrimaryOverSecondaryLimitPercent != nil {
 		copyDetails.PrimaryOverSecondaryLimitPercent = float64Ptr(*details.PrimaryOverSecondaryLimitPercent)
+	}
+	if details.RateLimitResetCreditsAvailableCount != nil {
+		copyDetails.RateLimitResetCreditsAvailableCount = int64Ptr(*details.RateLimitResetCreditsAvailableCount)
 	}
 	if details.ModelQuotas != nil {
 		copyDetails.ModelQuotas = make(map[string]modelQuota, len(details.ModelQuotas))
@@ -387,6 +422,35 @@ func copyModelQuota(quota modelQuota) modelQuota {
 		}
 	}
 	return copyQuota
+}
+
+func copyClaudeExtraUsage(extra *claudeExtraUsage) *claudeExtraUsage {
+	if extra == nil {
+		return nil
+	}
+	copyExtra := *extra
+	if extra.Utilization != nil {
+		copyExtra.Utilization = float64Ptr(*extra.Utilization)
+	}
+	return &copyExtra
+}
+
+func copyQuotaGroups(groups []quotaGroup) []quotaGroup {
+	if groups == nil {
+		return nil
+	}
+	out := make([]quotaGroup, len(groups))
+	for i, group := range groups {
+		out[i] = group
+		out[i].Buckets = make([]quotaBucket, len(group.Buckets))
+		for j, bucket := range group.Buckets {
+			out[i].Buckets[j] = bucket
+			if bucket.RemainingFraction != nil {
+				out[i].Buckets[j].RemainingFraction = float64Ptr(*bucket.RemainingFraction)
+			}
+		}
+	}
+	return out
 }
 
 // --- Pointer helpers for omitempty numeric fields ---
@@ -1192,7 +1256,13 @@ type hostAuthFileEntry struct {
 	Email          string `json:"email,omitempty"`
 	Success        int64  `json:"success,omitempty"`
 	Failed         int64  `json:"failed,omitempty"`
-	NextRetryAfter string `json:"next_retry_after,omitempty"`
+	NextRetryAfter string         `json:"next_retry_after,omitempty"`
+	ProjectID                       string         `json:"project_id,omitempty"`
+	Metadata                        map[string]any `json:"metadata,omitempty"`
+	Attributes                      map[string]any `json:"attributes,omitempty"`
+	CodexAccountID                  string         `json:"chatgpt_account_id,omitempty"`
+	CodexPlanType                   string         `json:"plan_type,omitempty"`
+	CodexSubscriptionActiveUntil    string         `json:"subscription_active_until,omitempty"`
 }
 
 var (
@@ -1292,6 +1362,51 @@ func mergeAuthFileEntry(authIndex string, entry hostAuthFileEntry) {
 	}
 	if entry.Status != "" {
 		storeEntry.Status = entry.Status
+	}
+
+	// Copy safe metadata into the stored entry
+	if entry.ProjectID != "" {
+		storeEntry.AntigravityProjectID = entry.ProjectID
+	}
+	if v := firstNonEmptyStringValue(
+		entry.CodexAccountID,
+		stringFromMap(entry.Metadata, "chatgpt_account_id"),
+		stringFromMap(entry.Metadata, "chatgptAccountId"),
+		stringFromMap(entry.Attributes, "chatgpt_account_id"),
+		stringFromMap(entry.Attributes, "chatgptAccountId"),
+	); v != "" {
+		storeEntry.CodexAccountID = v
+	}
+	if v := firstNonEmptyStringValue(
+		entry.CodexPlanType,
+		stringFromMap(entry.Metadata, "plan_type"),
+		stringFromMap(entry.Metadata, "planType"),
+		stringFromMap(entry.Attributes, "plan_type"),
+		stringFromMap(entry.Attributes, "planType"),
+	); v != "" {
+		storeEntry.CodexPlanTypeFallback = v
+	}
+	if v := firstNonEmptyStringValue(
+		entry.CodexSubscriptionActiveUntil,
+		stringFromMap(entry.Metadata, "chatgpt_subscription_active_until"),
+		stringFromMap(entry.Metadata, "chatgptSubscriptionActiveUntil"),
+		stringFromMap(entry.Metadata, "subscription_active_until"),
+		stringFromMap(entry.Metadata, "subscriptionActiveUntil"),
+		stringFromMap(entry.Attributes, "chatgpt_subscription_active_until"),
+		stringFromMap(entry.Attributes, "chatgptSubscriptionActiveUntil"),
+		stringFromMap(entry.Attributes, "subscription_active_until"),
+		stringFromMap(entry.Attributes, "subscriptionActiveUntil"),
+	); v != "" {
+		storeEntry.CodexSubscriptionActiveUntil = v
+	}
+	if v := firstNonEmptyStringValue(
+		storeEntry.AntigravityProjectID,
+		stringFromMap(entry.Metadata, "project_id"),
+		stringFromMap(entry.Metadata, "projectId"),
+		stringFromMap(entry.Attributes, "project_id"),
+		stringFromMap(entry.Attributes, "projectId"),
+	); v != "" {
+		storeEntry.AntigravityProjectID = v
 	}
 
 	// Set quota state from unavailable/status_message/next_retry_after

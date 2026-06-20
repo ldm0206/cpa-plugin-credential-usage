@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 )
@@ -863,6 +864,136 @@ func TestUpdateAntigravityModelQuotasStoresFetchAvailableModels(t *testing.T) {
 	pro := quotas["gemini-2.5-pro"]
 	if pro.RemainingFraction == nil || *pro.RemainingFraction != 0.5 {
 		t.Fatalf("pro quota = %+v, want remaining fraction", pro)
+	}
+}
+
+func TestPanelCodexUsageBuilderMatchesManagementPanel(t *testing.T) {
+	entry := &credentialEntry{CodexAccountID: "account-123"}
+	payload := buildCodexUsageAPICallPayload("codex-auth", entry)
+
+	var req map[string]any
+	if err := json.Unmarshal(payload, &req); err != nil {
+		t.Fatalf("unmarshal payload: %v body=%s", err, string(payload))
+	}
+	if req["auth_index"] != "codex-auth" {
+		t.Fatalf("auth_index = %v, want codex-auth", req["auth_index"])
+	}
+	if req["method"] != "GET" {
+		t.Fatalf("method = %v, want GET", req["method"])
+	}
+	if req["url"] != "https://chatgpt.com/backend-api/wham/usage" {
+		t.Fatalf("url = %v, want wham usage", req["url"])
+	}
+	if _, ok := req["data"]; ok {
+		t.Fatalf("payload should not include data body: %s", string(payload))
+	}
+	body := string(payload)
+	if strings.Contains(body, "/backend-api/codex/responses") || strings.Contains(body, `"hi"`) {
+		t.Fatalf("payload still contains probe artifacts: %s", body)
+	}
+	header, ok := req["header"].(map[string]any)
+	if !ok {
+		t.Fatalf("header = %#v, want object", req["header"])
+	}
+	if header["Authorization"] != "Bearer $TOKEN$" {
+		t.Fatalf("Authorization = %v, want Bearer $TOKEN$", header["Authorization"])
+	}
+	if header["Chatgpt-Account-Id"] != "account-123" {
+		t.Fatalf("Chatgpt-Account-Id = %v, want account-123", header["Chatgpt-Account-Id"])
+	}
+}
+
+func TestPanelClaudeBuildersMatchManagementPanel(t *testing.T) {
+	usage := buildClaudeUsageAPICallPayload("claude-auth")
+	profile := buildClaudeProfileAPICallPayload("claude-auth")
+
+	for name, payload := range map[string][]byte{"usage": usage, "profile": profile} {
+		var req map[string]any
+		if err := json.Unmarshal(payload, &req); err != nil {
+			t.Fatalf("%s unmarshal payload: %v body=%s", name, err, string(payload))
+		}
+		if req["auth_index"] != "claude-auth" || req["method"] != "GET" {
+			t.Fatalf("%s request = %+v, want auth_index claude-auth and GET", name, req)
+		}
+		header := req["header"].(map[string]any)
+		if header["Authorization"] != "Bearer $TOKEN$" || header["anthropic-beta"] != "oauth-2025-04-20" {
+			t.Fatalf("%s headers = %+v, want panel Claude headers", name, header)
+		}
+	}
+	var usageReq map[string]any
+	var profileReq map[string]any
+	_ = json.Unmarshal(usage, &usageReq)
+	_ = json.Unmarshal(profile, &profileReq)
+	if usageReq["url"] != "https://api.anthropic.com/api/oauth/usage" {
+		t.Fatalf("usage url = %v", usageReq["url"])
+	}
+	if profileReq["url"] != "https://api.anthropic.com/api/oauth/profile" {
+		t.Fatalf("profile url = %v", profileReq["url"])
+	}
+}
+
+func TestPanelAntigravityBuildersMatchManagementPanel(t *testing.T) {
+	if len(antigravityQuotaSummaryURLs) != 3 {
+		t.Fatalf("antigravity urls = %v, want 3", antigravityQuotaSummaryURLs)
+	}
+	if antigravityQuotaSummaryURLs[0] != "https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary" {
+		t.Fatalf("first antigravity quota URL = %q", antigravityQuotaSummaryURLs[0])
+	}
+
+	payload := buildAntigravityQuotaSummaryAPICallPayload("ag-auth", "project-123", antigravityQuotaSummaryURLs[0])
+	var req map[string]any
+	if err := json.Unmarshal(payload, &req); err != nil {
+		t.Fatalf("unmarshal quota payload: %v body=%s", err, string(payload))
+	}
+	if req["auth_index"] != "ag-auth" || req["method"] != "POST" || req["url"] != antigravityQuotaSummaryURLs[0] {
+		t.Fatalf("quota request = %+v", req)
+	}
+	if req["data"] != `{"project":"project-123"}` {
+		t.Fatalf("quota data = %v, want project JSON", req["data"])
+	}
+
+	subscription := buildAntigravitySubscriptionAPICallPayload("ag-auth")
+	var subReq map[string]any
+	if err := json.Unmarshal(subscription, &subReq); err != nil {
+		t.Fatalf("unmarshal subscription payload: %v body=%s", err, string(subscription))
+	}
+	if subReq["url"] != "https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist" {
+		t.Fatalf("subscription url = %v", subReq["url"])
+	}
+	if subReq["data"] != `{"metadata":{"ideType":"ANTIGRAVITY"}}` {
+		t.Fatalf("subscription data = %v", subReq["data"])
+	}
+}
+
+func TestCopyQuotaDetailsCopiesPanelFields(t *testing.T) {
+	resetCount := int64(2)
+	details := quotaDetails{
+		ExtraUsage: &claudeExtraUsage{IsEnabled: true, MonthlyLimit: 100, UsedCredits: 40, Utilization: float64Ptr(0.4)},
+		QuotaGroups: []quotaGroup{{
+			ID: "group-1", Label: "Group", Description: "Desc",
+			Buckets: []quotaBucket{{ID: "bucket-1", Label: "Bucket", RemainingFraction: float64Ptr(0.75), ResetTime: "2026-06-21T00:00:00Z"}},
+		}},
+		SubscriptionActiveUntil:              "2026-07-01T00:00:00Z",
+		RateLimitResetCreditsAvailableCount: &resetCount,
+	}
+
+	copied := copyQuotaDetails(details)
+	if copied.ExtraUsage == nil || copied.ExtraUsage.Utilization == nil || *copied.ExtraUsage.Utilization != 0.4 {
+		t.Fatalf("extra_usage copy = %+v", copied.ExtraUsage)
+	}
+	*copied.ExtraUsage.Utilization = 0.9
+	copied.QuotaGroups[0].Buckets[0].Label = "mutated"
+	*copied.QuotaGroups[0].Buckets[0].RemainingFraction = 0.1
+	*copied.RateLimitResetCreditsAvailableCount = 9
+
+	if *details.ExtraUsage.Utilization != 0.4 {
+		t.Fatalf("original extra usage mutated: %+v", details.ExtraUsage)
+	}
+	if details.QuotaGroups[0].Buckets[0].Label != "Bucket" || *details.QuotaGroups[0].Buckets[0].RemainingFraction != 0.75 {
+		t.Fatalf("original quota group mutated: %+v", details.QuotaGroups)
+	}
+	if *details.RateLimitResetCreditsAvailableCount != 2 {
+		t.Fatalf("original reset credits mutated: %v", details.RateLimitResetCreditsAvailableCount)
 	}
 }
 
