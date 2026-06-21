@@ -58,28 +58,28 @@ type usageSummary struct {
 }
 
 type quotaDetails struct {
-	Source                           string                `json:"source,omitempty"`
-	UpdatedAt                        string                `json:"updated_at,omitempty"`
-	Available                        *bool                 `json:"available,omitempty"`
-	Windows                          []quotaWindow         `json:"windows,omitempty"`
-	OverallResetAt                   string                `json:"overall_reset_at,omitempty"`
-	RateLimits                       *rateLimitDetails     `json:"rate_limits,omitempty"`
-	Credits                          *creditDetails        `json:"credits,omitempty"`
-	ModelQuotas                      map[string]modelQuota          `json:"model_quotas,omitempty"`
-	ExtraUsage                       *claudeExtraUsage              `json:"extra_usage,omitempty"`
-	QuotaGroups                      []quotaGroup                   `json:"quota_groups,omitempty"`
-	SubscriptionActiveUntil          string                         `json:"subscription_active_until,omitempty"`
-	RateLimitResetCreditsAvailableCount *int64                      `json:"rate_limit_reset_credits_available_count,omitempty"`
-	ResetsAt                         string                `json:"resets_at,omitempty"`
-	ResetsInSeconds                  *int64                `json:"resets_in_seconds,omitempty"`
-	PlanType                         string                `json:"plan_type,omitempty"`
-	ErrorType                        string                `json:"error_type,omitempty"`
-	ErrorStatus                      string                `json:"error_status,omitempty"`
-	ErrorReason                      string                `json:"error_reason,omitempty"`
-	Model                            string                `json:"model,omitempty"`
-	RetryDelay                       string                `json:"retry_delay,omitempty"`
-	PrimaryOverSecondaryLimitPercent *float64              `json:"primary_over_secondary_limit_percent,omitempty"`
-	Detail                           string                `json:"detail,omitempty"`
+	Source                              string                `json:"source,omitempty"`
+	UpdatedAt                           string                `json:"updated_at,omitempty"`
+	Available                           *bool                 `json:"available,omitempty"`
+	Windows                             []quotaWindow         `json:"windows,omitempty"`
+	OverallResetAt                      string                `json:"overall_reset_at,omitempty"`
+	RateLimits                          *rateLimitDetails     `json:"rate_limits,omitempty"`
+	Credits                             *creditDetails        `json:"credits,omitempty"`
+	ModelQuotas                         map[string]modelQuota `json:"model_quotas,omitempty"`
+	ExtraUsage                          *claudeExtraUsage     `json:"extra_usage,omitempty"`
+	QuotaGroups                         []quotaGroup          `json:"quota_groups,omitempty"`
+	SubscriptionActiveUntil             string                `json:"subscription_active_until,omitempty"`
+	RateLimitResetCreditsAvailableCount *int64                `json:"rate_limit_reset_credits_available_count,omitempty"`
+	ResetsAt                            string                `json:"resets_at,omitempty"`
+	ResetsInSeconds                     *int64                `json:"resets_in_seconds,omitempty"`
+	PlanType                            string                `json:"plan_type,omitempty"`
+	ErrorType                           string                `json:"error_type,omitempty"`
+	ErrorStatus                         string                `json:"error_status,omitempty"`
+	ErrorReason                         string                `json:"error_reason,omitempty"`
+	Model                               string                `json:"model,omitempty"`
+	RetryDelay                          string                `json:"retry_delay,omitempty"`
+	PrimaryOverSecondaryLimitPercent    *float64              `json:"primary_over_secondary_limit_percent,omitempty"`
+	Detail                              string                `json:"detail,omitempty"`
 }
 
 type quotaWindow struct {
@@ -125,6 +125,7 @@ type quotaBucket struct {
 	ID                string   `json:"id,omitempty"`
 	Label             string   `json:"label,omitempty"`
 	Description       string   `json:"description,omitempty"`
+	Window            string   `json:"window,omitempty"`
 	RemainingFraction *float64 `json:"remaining_fraction,omitempty"`
 	ResetTime         string   `json:"reset_time,omitempty"`
 }
@@ -177,9 +178,17 @@ func (f *flexibleFloat) UnmarshalJSON(raw []byte) error {
 		*f = 0
 		return nil
 	}
+	percent := false
+	if strings.HasSuffix(value, "%") {
+		percent = true
+		value = strings.TrimSpace(strings.TrimSuffix(value, "%"))
+	}
 	n, err := strconv.ParseFloat(value, 64)
 	if err != nil {
 		return err
+	}
+	if percent {
+		n = n / 100
 	}
 	*f = flexibleFloat(n)
 	return nil
@@ -199,20 +208,20 @@ type allowedTier struct {
 }
 
 type credentialEntry struct {
-	AuthID       string       `json:"auth_id"`
-	AuthIndex    string       `json:"auth_index"`
-	Provider     string       `json:"provider"`
-	Label        string       `json:"label,omitempty"`
-	Email        string       `json:"email,omitempty"`
-	Status       string       `json:"status"`
-	QuotaState   quotaState   `json:"quota_state"`
-	UsageSummary usageSummary `json:"-"`
-	QuotaDetails quotaDetails `json:"quota_details"`
-	LastActiveAt string       `json:"last_active_at,omitempty"`
-	CodexAccountID                 string `json:"-"`
-	CodexPlanTypeFallback          string `json:"-"`
-	CodexSubscriptionActiveUntil   string `json:"-"`
-	AntigravityProjectID           string `json:"-"`
+	AuthID                       string       `json:"auth_id"`
+	AuthIndex                    string       `json:"auth_index"`
+	Provider                     string       `json:"provider"`
+	Label                        string       `json:"label,omitempty"`
+	Email                        string       `json:"email,omitempty"`
+	Status                       string       `json:"status"`
+	QuotaState                   quotaState   `json:"quota_state"`
+	UsageSummary                 usageSummary `json:"-"`
+	QuotaDetails                 quotaDetails `json:"quota_details"`
+	LastActiveAt                 string       `json:"last_active_at,omitempty"`
+	CodexAccountID               string       `json:"-"`
+	CodexPlanTypeFallback        string       `json:"-"`
+	CodexSubscriptionActiveUntil string       `json:"-"`
+	AntigravityProjectID         string       `json:"-"`
 }
 
 type credentialStore struct {
@@ -1287,25 +1296,26 @@ func managementJSONResponse(statusCode int, body any) ([]byte, error) {
 // --- Task 6: Host Auth Callback Polling ---
 
 type hostAuthFileEntry struct {
-	ID             string `json:"id,omitempty"`
-	AuthIndex      string `json:"auth_index,omitempty"`
-	Name           string `json:"name"`
-	Provider       string `json:"provider,omitempty"`
-	Label          string `json:"label,omitempty"`
-	Status         string `json:"status,omitempty"`
-	StatusMessage  string `json:"status_message,omitempty"`
-	Disabled       bool   `json:"disabled,omitempty"`
-	Unavailable    bool   `json:"unavailable,omitempty"`
-	Email          string `json:"email,omitempty"`
-	Success        int64  `json:"success,omitempty"`
-	Failed         int64  `json:"failed,omitempty"`
-	NextRetryAfter string         `json:"next_retry_after,omitempty"`
-	ProjectID                       string         `json:"project_id,omitempty"`
-	Metadata                        map[string]any `json:"metadata,omitempty"`
-	Attributes                      map[string]any `json:"attributes,omitempty"`
-	CodexAccountID                  string         `json:"chatgpt_account_id,omitempty"`
-	CodexPlanType                   string         `json:"plan_type,omitempty"`
-	CodexSubscriptionActiveUntil    string         `json:"subscription_active_until,omitempty"`
+	ID                           string         `json:"id,omitempty"`
+	AuthIndex                    string         `json:"auth_index,omitempty"`
+	Name                         string         `json:"name"`
+	Provider                     string         `json:"provider,omitempty"`
+	Label                        string         `json:"label,omitempty"`
+	Status                       string         `json:"status,omitempty"`
+	StatusMessage                string         `json:"status_message,omitempty"`
+	Disabled                     bool           `json:"disabled,omitempty"`
+	Unavailable                  bool           `json:"unavailable,omitempty"`
+	Email                        string         `json:"email,omitempty"`
+	Success                      int64          `json:"success,omitempty"`
+	Failed                       int64          `json:"failed,omitempty"`
+	NextRetryAfter               string         `json:"next_retry_after,omitempty"`
+	ProjectID                    string         `json:"project_id,omitempty"`
+	Metadata                     map[string]any `json:"metadata,omitempty"`
+	Attributes                   map[string]any `json:"attributes,omitempty"`
+	CodexAccountID               string         `json:"chatgpt_account_id,omitempty"`
+	CodexPlanType                string         `json:"plan_type,omitempty"`
+	CodexSubscriptionActiveUntil string         `json:"subscription_active_until,omitempty"`
+	IDToken                      any            `json:"id_token,omitempty"`
 }
 
 var (
@@ -1417,6 +1427,9 @@ func mergeAuthFileEntry(authIndex string, entry hostAuthFileEntry) {
 		stringFromMap(entry.Metadata, "chatgptAccountId"),
 		stringFromMap(entry.Attributes, "chatgpt_account_id"),
 		stringFromMap(entry.Attributes, "chatgptAccountId"),
+		codexAccountIDFromIDToken(entry.IDToken),
+		codexAccountIDFromIDToken(entry.Metadata["id_token"]),
+		codexAccountIDFromIDToken(entry.Attributes["id_token"]),
 	); v != "" {
 		storeEntry.CodexAccountID = v
 	}
@@ -1703,7 +1716,6 @@ func queryCodexQuota(authIndex string) {
 	}
 	applyCodexUsageResponse(authIndex, &usageResp)
 }
-
 
 func updateClaudeUsageQuota(authIndex string, resp *claudeUsageResponse) {
 	if resp == nil {

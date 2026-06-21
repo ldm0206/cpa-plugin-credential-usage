@@ -1,13 +1,14 @@
 package main
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"strings"
 )
 
 const (
-	codexUsageURL             = "https://chatgpt.com/backend-api/wham/usage"
+	codexUsageURL               = "https://chatgpt.com/backend-api/wham/usage"
 	codexResetCreditsConsumeURL = "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits/consume"
 
 	claudeUsageURL   = "https://api.anthropic.com/api/oauth/usage"
@@ -129,5 +130,60 @@ func stringFromMap(values map[string]any, key string) string {
 		return strings.TrimSpace(fmt.Sprintf("%.0f", typed))
 	default:
 		return strings.TrimSpace(fmt.Sprint(typed))
+	}
+}
+
+func codexAccountIDFromIDToken(value any) string {
+	payload := mapFromIDToken(value)
+	if payload == nil {
+		return ""
+	}
+	return firstNonEmptyStringValue(
+		stringFromMap(payload, "chatgpt_account_id"),
+		stringFromMap(payload, "chatgptAccountId"),
+	)
+}
+
+func mapFromIDToken(value any) map[string]any {
+	switch typed := value.(type) {
+	case nil:
+		return nil
+	case map[string]any:
+		return typed
+	case string:
+		trimmed := strings.TrimSpace(typed)
+		if trimmed == "" {
+			return nil
+		}
+		var direct map[string]any
+		if err := json.Unmarshal([]byte(trimmed), &direct); err == nil {
+			return direct
+		}
+		parts := strings.Split(trimmed, ".")
+		if len(parts) < 2 {
+			return nil
+		}
+		decoded, err := base64.RawURLEncoding.DecodeString(parts[1])
+		if err != nil {
+			decoded, err = base64.URLEncoding.DecodeString(parts[1])
+		}
+		if err != nil {
+			return nil
+		}
+		var payload map[string]any
+		if err := json.Unmarshal(decoded, &payload); err != nil {
+			return nil
+		}
+		return payload
+	default:
+		raw, err := json.Marshal(typed)
+		if err != nil {
+			return nil
+		}
+		var payload map[string]any
+		if err := json.Unmarshal(raw, &payload); err != nil {
+			return nil
+		}
+		return payload
 	}
 }

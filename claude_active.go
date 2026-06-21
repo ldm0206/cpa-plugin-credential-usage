@@ -14,6 +14,7 @@ type claudeProfileAccount struct {
 
 type claudeProfileOrganization struct {
 	Type               string `json:"type"`
+	OrganizationType   string `json:"organization_type"`
 	SubscriptionStatus string `json:"subscription_status"`
 }
 
@@ -46,7 +47,8 @@ func resolveClaudePlanType(resp *claudeProfileResponse) string {
 	if resp.Account.HasClaudePro != nil && *resp.Account.HasClaudePro {
 		return "plan_pro"
 	}
-	if strings.EqualFold(strings.TrimSpace(resp.Organization.Type), "claude_team") && strings.EqualFold(strings.TrimSpace(resp.Organization.SubscriptionStatus), "active") {
+	organizationType := firstNonEmptyStringValue(resp.Organization.OrganizationType, resp.Organization.Type)
+	if strings.EqualFold(strings.TrimSpace(organizationType), "claude_team") && strings.EqualFold(strings.TrimSpace(resp.Organization.SubscriptionStatus), "active") {
 		return "plan_team"
 	}
 	if resp.Account.HasClaudeMax != nil && !*resp.Account.HasClaudeMax && resp.Account.HasClaudePro != nil && !*resp.Account.HasClaudePro {

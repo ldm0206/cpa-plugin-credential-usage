@@ -504,7 +504,6 @@ func TestCredentialStoreReturnsDeepCopy(t *testing.T) {
 
 func boolPtr(v bool) *bool { return &v }
 
-
 func TestParseCodexHeadersStoresPrimarySecondaryWindows(t *testing.T) {
 	entry := &credentialEntry{}
 	parseCodexHeaders(entry, map[string][]string{
@@ -1129,7 +1128,7 @@ func TestCopyQuotaDetailsCopiesPanelFields(t *testing.T) {
 			ID: "group-1", Label: "Group", Description: "Desc",
 			Buckets: []quotaBucket{{ID: "bucket-1", Label: "Bucket", RemainingFraction: float64Ptr(0.75), ResetTime: "2026-06-21T00:00:00Z"}},
 		}},
-		SubscriptionActiveUntil:              "2026-07-01T00:00:00Z",
+		SubscriptionActiveUntil:             "2026-07-01T00:00:00Z",
 		RateLimitResetCreditsAvailableCount: &resetCount,
 	}
 
@@ -1164,8 +1163,8 @@ func TestApplyCodexUsageResponseStoresPanelUsagePayload(t *testing.T) {
 	resp := &codexUsageResponse{
 		PlanType: "pro",
 		RateLimit: &codexRateLimitInfo{
-			Allowed: boolPtr(true),
-			PrimaryWindow: &codexUsageWindow{UsedPercent: flexibleFloatPtr(12.5), LimitWindowSeconds: int64Ptr(18000), ResetAfterSeconds: int64Ptr(3600)},
+			Allowed:         boolPtr(true),
+			PrimaryWindow:   &codexUsageWindow{UsedPercent: flexibleFloatPtr(12.5), LimitWindowSeconds: int64Ptr(18000), ResetAfterSeconds: int64Ptr(3600)},
 			SecondaryWindow: &codexUsageWindow{UsedPercent: flexibleFloatPtr(50), LimitWindowSeconds: int64Ptr(604800), ResetAt: "2026-06-28T00:00:00Z"},
 		},
 		CodeReviewRateLimit: &codexRateLimitInfo{
@@ -1196,7 +1195,7 @@ func TestApplyCodexUsageResponseStoresPanelUsagePayload(t *testing.T) {
 	if entry.QuotaDetails.RateLimitResetCreditsAvailableCount == nil || *entry.QuotaDetails.RateLimitResetCreditsAvailableCount != 3 {
 		t.Fatalf("reset credits = %v, want 3", entry.QuotaDetails.RateLimitResetCreditsAvailableCount)
 	}
-	for _, name := range []string{"primary", "secondary", "code_review_primary", "team_monthly_secondary"} {
+	for _, name := range []string{"five-hour", "weekly", "code-review-five-hour", "team-monthly-monthly-0"} {
 		if findQuotaWindow(entry.QuotaDetails.Windows, name) == nil {
 			t.Fatalf("missing codex window %q in %+v", name, entry.QuotaDetails.Windows)
 		}
@@ -1220,7 +1219,7 @@ func TestApplyCodexUsageResponseFallsBackToAuthPlan(t *testing.T) {
 
 func TestCodexUsageAvailablePrimaryAllowedButCodeReviewLimitReached(t *testing.T) {
 	result := codexUsageAvailable(&codexUsageResponse{
-		RateLimit: &codexRateLimitInfo{Allowed: boolPtr(true)},
+		RateLimit:           &codexRateLimitInfo{Allowed: boolPtr(true)},
 		CodeReviewRateLimit: &codexRateLimitInfo{LimitReached: boolPtr(true)},
 	})
 	if result == nil || *result {
@@ -1250,7 +1249,7 @@ func TestCodexUsageAvailableNoSignalsReturnsNil(t *testing.T) {
 
 func TestCodexUsageAvailableAllSignalsTrueReturnsTrue(t *testing.T) {
 	result := codexUsageAvailable(&codexUsageResponse{
-		RateLimit: &codexRateLimitInfo{Allowed: boolPtr(true)},
+		RateLimit:           &codexRateLimitInfo{Allowed: boolPtr(true)},
 		CodeReviewRateLimit: &codexRateLimitInfo{Allowed: boolPtr(true)},
 		AdditionalRateLimits: []codexAdditionalRateLimit{{
 			LimitName: "team_monthly",
@@ -1321,6 +1320,152 @@ func TestUpdateAntigravitySubscriptionStoresPanelPlanAndCredits(t *testing.T) {
 	}
 	if entry.QuotaDetails.Credits == nil || entry.QuotaDetails.Credits.PaidTierID != "g1-ultra-tier" || entry.QuotaDetails.Credits.Amount == nil || *entry.QuotaDetails.Credits.Amount != 20 {
 		t.Fatalf("credits = %+v, want paid tier and credits", entry.QuotaDetails.Credits)
+	}
+}
+
+func TestUpdateAntigravityQuotaGroupsParsesPanelPayloadFields(t *testing.T) {
+	resetTestStore()
+	store.mu.Lock()
+	store.getOrCreate("ag-panel", "antigravity", "auth-ag-panel")
+	store.mu.Unlock()
+
+	var resp antigravityQuotaSummaryResponse
+	if err := json.Unmarshal([]byte(`{"groups":[{"displayName":"Claude and GPT Models","description":"Models within this group: Claude, GPT","buckets":[{"bucketId":"weekly","displayName":"Weekly limit","window":"weekly","remainingFraction":"0.42","resetTime":"2026-06-28T00:00:00Z"},{"bucket_id":"five-hour","display_name":"5 hour limit","window":"5h","remaining_fraction":"75%","reset_time":"2026-06-21T10:00:00Z"}]}]}`), &resp); err != nil {
+		t.Fatalf("unmarshal panel quota payload: %v", err)
+	}
+
+	updateAntigravityQuotaGroups("ag-panel", &resp)
+
+	entry := store.getByIndex("ag-panel")
+	if entry == nil {
+		t.Fatalf("missing antigravity credential")
+	}
+	groups := entry.QuotaDetails.QuotaGroups
+	if len(groups) != 1 {
+		t.Fatalf("quota_groups = %+v, want one panel group", groups)
+	}
+	if groups[0].ID != "claude-and-gpt-models" || groups[0].Label != "Claude and GPT Models" {
+		t.Fatalf("group = %+v, want panel displayName-derived id/label", groups[0])
+	}
+	if len(groups[0].Buckets) != 2 {
+		t.Fatalf("buckets = %+v, want two panel buckets", groups[0].Buckets)
+	}
+	fiveHour := groups[0].Buckets[0]
+	if fiveHour.ID != "five-hour" || fiveHour.Label != "5 hour limit" {
+		t.Fatalf("first bucket = %+v, want sorted 5h panel bucket", fiveHour)
+	}
+	if fiveHour.RemainingFraction == nil || *fiveHour.RemainingFraction != 0.75 || fiveHour.ResetTime != "2026-06-21T10:00:00Z" {
+		t.Fatalf("first bucket quota = %+v, want 75%% and reset", fiveHour)
+	}
+	weekly := groups[0].Buckets[1]
+	if weekly.ID != "weekly" || weekly.Label != "Weekly limit" {
+		t.Fatalf("second bucket = %+v, want weekly panel bucket", weekly)
+	}
+	rawDetails, err := json.Marshal(entry.QuotaDetails)
+	if err != nil {
+		t.Fatalf("marshal quota details: %v", err)
+	}
+	var details map[string]any
+	if err := json.Unmarshal(rawDetails, &details); err != nil {
+		t.Fatalf("unmarshal quota details: %v", err)
+	}
+	jsonGroups := details["quota_groups"].([]any)
+	jsonBuckets := jsonGroups[0].(map[string]any)["buckets"].([]any)
+	if jsonBuckets[0].(map[string]any)["window"] != "5h" || jsonBuckets[1].(map[string]any)["window"] != "weekly" {
+		t.Fatalf("serialized buckets = %+v, want panel window fields", jsonBuckets)
+	}
+}
+
+func TestApplyCodexUsageResponseClassifiesPanelWindowsByDuration(t *testing.T) {
+	resetTestStore()
+	store.mu.Lock()
+	store.getOrCreate("codex-panel", "codex", "auth-codex-panel")
+	store.mu.Unlock()
+
+	applyCodexUsageResponse("codex-panel", &codexUsageResponse{
+		RateLimit: &codexRateLimitInfo{
+			PrimaryWindow:   &codexUsageWindow{UsedPercent: flexibleFloatPtr(60), LimitWindowSeconds: int64Ptr(604800)},
+			SecondaryWindow: &codexUsageWindow{UsedPercent: flexibleFloatPtr(20), LimitWindowSeconds: int64Ptr(18000)},
+		},
+		CodeReviewRateLimit: &codexRateLimitInfo{
+			PrimaryWindow:   &codexUsageWindow{UsedPercent: flexibleFloatPtr(10), LimitWindowSeconds: int64Ptr(18000)},
+			SecondaryWindow: &codexUsageWindow{UsedPercent: flexibleFloatPtr(30), LimitWindowSeconds: int64Ptr(2592000)},
+		},
+	})
+
+	entry := store.getByIndex("codex-panel")
+	if entry == nil {
+		t.Fatalf("missing codex credential")
+	}
+	for _, name := range []string{"five-hour", "weekly", "code-review-five-hour", "code-review-monthly"} {
+		if findQuotaWindow(entry.QuotaDetails.Windows, name) == nil {
+			t.Fatalf("missing panel-classified codex window %q in %+v", name, entry.QuotaDetails.Windows)
+		}
+	}
+	if weekly := findQuotaWindow(entry.QuotaDetails.Windows, "weekly"); weekly == nil || weekly.UsedPercent == nil || *weekly.UsedPercent != 60 {
+		t.Fatalf("weekly window = %+v, want primary 7d window", weekly)
+	}
+	if fiveHour := findQuotaWindow(entry.QuotaDetails.Windows, "five-hour"); fiveHour == nil || fiveHour.UsedPercent == nil || *fiveHour.UsedPercent != 20 {
+		t.Fatalf("five-hour window = %+v, want secondary 5h window", fiveHour)
+	}
+}
+
+func TestApplyCodexUsageResponseUsesPanelLimitReachedFallbackPercent(t *testing.T) {
+	resetTestStore()
+	store.mu.Lock()
+	store.getOrCreate("codex-reached", "codex", "auth-codex-reached")
+	store.mu.Unlock()
+
+	applyCodexUsageResponse("codex-reached", &codexUsageResponse{
+		RateLimit: &codexRateLimitInfo{
+			LimitReached:  boolPtr(true),
+			PrimaryWindow: &codexUsageWindow{LimitWindowSeconds: int64Ptr(18000), ResetAfterSeconds: int64Ptr(600)},
+		},
+	})
+
+	entry := store.getByIndex("codex-reached")
+	window := findQuotaWindow(entry.QuotaDetails.Windows, "five-hour")
+	if window == nil || window.UsedPercent == nil || *window.UsedPercent != 100 {
+		t.Fatalf("five-hour window = %+v, want 100 used percent when panel limit reached without percent", window)
+	}
+}
+
+func TestUpdateClaudePlanFromProfileUsesPanelOrganizationType(t *testing.T) {
+	resetTestStore()
+	store.mu.Lock()
+	store.getOrCreate("claude-team", "claude", "auth-claude-team")
+	store.mu.Unlock()
+
+	var resp claudeProfileResponse
+	if err := json.Unmarshal([]byte(`{"organization":{"organization_type":"claude_team","subscription_status":"active"}}`), &resp); err != nil {
+		t.Fatalf("unmarshal profile: %v", err)
+	}
+
+	updateClaudePlanFromProfile("claude-team", &resp)
+
+	entry := store.getByIndex("claude-team")
+	if entry.QuotaDetails.PlanType != "plan_team" {
+		t.Fatalf("plan_type = %q, want plan_team from organization_type", entry.QuotaDetails.PlanType)
+	}
+}
+
+func TestMergeAuthFileEntryExtractsCodexAccountIDFromPanelIDToken(t *testing.T) {
+	resetTestStore()
+	var entry hostAuthFileEntry
+	if err := json.Unmarshal([]byte(`{"auth_index":"codex-id-token","provider":"codex","id_token":"eyJhbGciOiJub25lIn0.eyJjaGF0Z3B0X2FjY291bnRfaWQiOiJhY2N0LWZyb20taWR0b2tlbiJ9."}`), &entry); err != nil {
+		t.Fatalf("unmarshal auth file: %v", err)
+	}
+
+	mergeAuthFileEntry("codex-id-token", entry)
+	stored := store.getByIndex("codex-id-token")
+	payload := buildCodexUsageAPICallPayload("codex-id-token", stored)
+	var req map[string]any
+	if err := json.Unmarshal(payload, &req); err != nil {
+		t.Fatalf("unmarshal codex payload: %v", err)
+	}
+	header := req["header"].(map[string]any)
+	if header["Chatgpt-Account-Id"] != "acct-from-idtoken" {
+		t.Fatalf("Chatgpt-Account-Id = %v, want acct-from-idtoken from id_token", header["Chatgpt-Account-Id"])
 	}
 }
 

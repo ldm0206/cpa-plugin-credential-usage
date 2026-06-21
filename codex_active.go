@@ -20,12 +20,12 @@ type codexUsageResponse struct {
 }
 
 type codexRateLimitInfo struct {
-	Allowed           *bool             `json:"allowed"`
-	LimitReached      *bool             `json:"limit_reached"`
-	LimitReachedCamel *bool             `json:"limitReached"`
-	PrimaryWindow     *codexUsageWindow `json:"primary_window"`
-	PrimaryWindowCamel *codexUsageWindow `json:"primaryWindow"`
-	SecondaryWindow   *codexUsageWindow `json:"secondary_window"`
+	Allowed              *bool             `json:"allowed"`
+	LimitReached         *bool             `json:"limit_reached"`
+	LimitReachedCamel    *bool             `json:"limitReached"`
+	PrimaryWindow        *codexUsageWindow `json:"primary_window"`
+	PrimaryWindowCamel   *codexUsageWindow `json:"primaryWindow"`
+	SecondaryWindow      *codexUsageWindow `json:"secondary_window"`
 	SecondaryWindowCamel *codexUsageWindow `json:"secondaryWindow"`
 }
 
@@ -41,16 +41,16 @@ type codexUsageWindow struct {
 }
 
 type codexAdditionalRateLimit struct {
-	LimitName          string              `json:"limit_name"`
-	LimitNameCamel     string              `json:"limitName"`
-	MeteredFeature     string              `json:"metered_feature"`
-	MeteredFeatureCamel string             `json:"meteredFeature"`
-	RateLimit          *codexRateLimitInfo `json:"rate_limit"`
-	RateLimitCamel     *codexRateLimitInfo `json:"rateLimit"`
+	LimitName           string              `json:"limit_name"`
+	LimitNameCamel      string              `json:"limitName"`
+	MeteredFeature      string              `json:"metered_feature"`
+	MeteredFeatureCamel string              `json:"meteredFeature"`
+	RateLimit           *codexRateLimitInfo `json:"rate_limit"`
+	RateLimitCamel      *codexRateLimitInfo `json:"rateLimit"`
 }
 
 type codexRateLimitResetCredits struct {
-	AvailableCount     *int64 `json:"available_count"`
+	AvailableCount      *int64 `json:"available_count"`
 	AvailableCountCamel *int64 `json:"availableCount"`
 }
 
@@ -73,14 +73,14 @@ func applyCodexUsageResponse(authIndex string, resp *codexUsageResponse) {
 	}
 
 	windows := make([]quotaWindow, 0)
-	windows = appendCodexRateLimitWindows(windows, "", firstCodexRateLimit(resp.RateLimit, resp.RateLimitCamel))
-	windows = appendCodexRateLimitWindows(windows, "code_review", firstCodexRateLimit(resp.CodeReviewRateLimit, resp.CodeReviewRateLimitCamel))
-	for _, additional := range firstCodexAdditionalRateLimits(resp.AdditionalRateLimits, resp.AdditionalRateLimitsCamel) {
-		name := sanitizeQuotaName(firstNonEmptyStringValue(additional.LimitName, additional.LimitNameCamel, additional.MeteredFeature, additional.MeteredFeatureCamel))
+	windows = appendCodexPanelRateLimitWindows(windows, "", firstCodexRateLimit(resp.RateLimit, resp.RateLimitCamel), -1)
+	windows = appendCodexPanelRateLimitWindows(windows, "code-review", firstCodexRateLimit(resp.CodeReviewRateLimit, resp.CodeReviewRateLimitCamel), -1)
+	for index, additional := range firstCodexAdditionalRateLimits(resp.AdditionalRateLimits, resp.AdditionalRateLimitsCamel) {
+		name := firstNonEmptyStringValue(additional.LimitName, additional.LimitNameCamel, additional.MeteredFeature, additional.MeteredFeatureCamel)
 		if name == "" {
-			name = "additional"
+			name = fmt.Sprintf("additional-%d", index+1)
 		}
-		windows = appendCodexRateLimitWindows(windows, name, firstCodexRateLimit(additional.RateLimit, additional.RateLimitCamel))
+		windows = appendCodexPanelRateLimitWindows(windows, name, firstCodexRateLimit(additional.RateLimit, additional.RateLimitCamel), index)
 	}
 	for _, window := range windows {
 		details.Windows = upsertQuotaWindow(details.Windows, window)
@@ -123,14 +123,26 @@ func firstCodexAdditionalRateLimits(primary, camel []codexAdditionalRateLimit) [
 	return camel
 }
 
-func appendCodexRateLimitWindows(out []quotaWindow, prefix string, limit *codexRateLimitInfo) []quotaWindow {
+const (
+	codexFiveHourSeconds = int64(18000)
+	codexWeekSeconds     = int64(604800)
+	codexMinMonthSeconds = int64(28 * 24 * 60 * 60)
+	codexMaxMonthSeconds = int64(31 * 24 * 60 * 60)
+)
+
+func appendCodexPanelRateLimitWindows(out []quotaWindow, prefix string, limit *codexRateLimitInfo, additionalIndex int) []quotaWindow {
 	if limit == nil {
 		return out
 	}
-	if window := codexPanelWindow(prefix, "primary", firstCodexWindow(limit.PrimaryWindow, limit.PrimaryWindowCamel)); window != nil {
+	fiveHourWindow, secondaryWindow := pickCodexPanelWindows(limit)
+	if window := codexPanelWindow(codexPanelWindowName(prefix, "five-hour", additionalIndex), fiveHourWindow, limit); window != nil {
 		out = append(out, *window)
 	}
-	if window := codexPanelWindow(prefix, "secondary", firstCodexWindow(limit.SecondaryWindow, limit.SecondaryWindowCamel)); window != nil {
+	secondaryRole := "weekly"
+	if codexWindowIsMonthly(secondaryWindow) {
+		secondaryRole = "monthly"
+	}
+	if window := codexPanelWindow(codexPanelWindowName(prefix, secondaryRole, additionalIndex), secondaryWindow, limit); window != nil {
 		out = append(out, *window)
 	}
 	return out
@@ -145,18 +157,70 @@ func firstCodexWindow(values ...*codexUsageWindow) *codexUsageWindow {
 	return nil
 }
 
-func codexPanelWindow(prefix, role string, input *codexUsageWindow) *quotaWindow {
+func pickCodexPanelWindows(limit *codexRateLimitInfo) (*codexUsageWindow, *codexUsageWindow) {
+	primary := firstCodexWindow(limit.PrimaryWindow, limit.PrimaryWindowCamel)
+	secondary := firstCodexWindow(limit.SecondaryWindow, limit.SecondaryWindowCamel)
+	var fiveHour *codexUsageWindow
+	var weekly *codexUsageWindow
+	for _, window := range []*codexUsageWindow{primary, secondary} {
+		seconds := firstInt64(windowSeconds(window))
+		if seconds == nil {
+			continue
+		}
+		switch {
+		case *seconds == codexFiveHourSeconds && fiveHour == nil:
+			fiveHour = window
+		case (*seconds == codexWeekSeconds || codexWindowIsMonthly(window)) && weekly == nil:
+			weekly = window
+		}
+	}
+	if fiveHour == nil && primary != weekly {
+		fiveHour = primary
+	}
+	if weekly == nil && secondary != fiveHour {
+		weekly = secondary
+	}
+	return fiveHour, weekly
+}
+
+func windowSeconds(window *codexUsageWindow) (*int64, *int64) {
+	if window == nil {
+		return nil, nil
+	}
+	return window.LimitWindowSeconds, window.LimitWindowSecondsCamel
+}
+
+func codexWindowIsMonthly(window *codexUsageWindow) bool {
+	seconds := firstInt64(windowSeconds(window))
+	return seconds != nil && *seconds >= codexMinMonthSeconds && *seconds <= codexMaxMonthSeconds
+}
+
+func codexPanelWindowName(prefix, role string, additionalIndex int) string {
+	if additionalIndex >= 0 {
+		idPrefix := sanitizePanelQuotaID(prefix)
+		if idPrefix == "" {
+			idPrefix = fmt.Sprintf("additional-%d", additionalIndex+1)
+		}
+		return fmt.Sprintf("%s-%s-%d", idPrefix, role, additionalIndex)
+	}
+	if prefix == "code-review" {
+		return prefix + "-" + role
+	}
+	return role
+}
+
+func codexPanelWindow(name string, input *codexUsageWindow, limit *codexRateLimitInfo) *quotaWindow {
 	if input == nil {
 		return nil
-	}
-	name := role
-	if prefix != "" {
-		name = prefix + "_" + role
 	}
 	used := firstFlexibleFloat(input.UsedPercent, input.UsedPercentCamel)
 	seconds := firstInt64(input.LimitWindowSeconds, input.LimitWindowSecondsCamel)
 	resetAfter := firstInt64(input.ResetAfterSeconds, input.ResetAfterSecondsCamel)
 	resetAt := firstNonEmptyStringValue(input.ResetAt, input.ResetAtCamel)
+	if used == nil && codexLimitUnavailable(limit) && (resetAfter != nil || resetAt != "") {
+		fallbackUsed := flexibleFloat(100)
+		used = &fallbackUsed
+	}
 	if used == nil && seconds == nil && resetAfter == nil && resetAt == "" {
 		return nil
 	}
@@ -168,6 +232,19 @@ func codexPanelWindow(prefix, role string, input *codexUsageWindow) *quotaWindow
 		ResetAfterSeconds: resetAfter,
 		ResetAt:           resetAt,
 	}
+}
+
+func codexLimitUnavailable(limit *codexRateLimitInfo) bool {
+	if limit == nil {
+		return false
+	}
+	if limit.Allowed != nil && !*limit.Allowed {
+		return true
+	}
+	if limit.LimitReached != nil && *limit.LimitReached {
+		return true
+	}
+	return limit.LimitReachedCamel != nil && *limit.LimitReachedCamel
 }
 
 func firstFlexibleFloat(values ...*flexibleFloat) *flexibleFloat {
